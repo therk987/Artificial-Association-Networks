@@ -1,0 +1,14 @@
+VISIT_COUNT_KEY = 'count'
+
+CHILD_COUNT_KEY = 'C_count'
+CHILD_ADJACENCY_MATRIX_KEY = 'A_c'
+INDICES_KEY = 'indices'
+HIDDEN_KEY = 'h'
+DECONV_HIDDEN_KEY = 'dh'
+
+PREDICT_KEY = 'pred'
+X_KEY = 'x'
+Y_KEY = 'y'
+DECONV_X_KEY = 'dx'
+
+SUBTASK_KEY = 's_t'
