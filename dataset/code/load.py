@@ -13,7 +13,6 @@ np.random.seed(SEED)
 torch.manual_seed(SEED)
 torch.backends.cudnn.deterministic = True
 
-
 def ALGORITHM_AST_NEUROTREE_DATA(random_state = 0):
 
     root = os.path.dirname(os.path.realpath(__file__)) + '/codeclone/algo/result/algo_ast_neurotree.pkl'
