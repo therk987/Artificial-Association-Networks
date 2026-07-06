@@ -181,9 +181,11 @@ def run_one_seed(args, seed, device):
     train_ds, valid_ds, test_ds, feature_encoders, class_count = \
         DATASETS[args.dataset](limit=args.limit)
 
-    train_loader = createNeuroDataloader(train_ds, batch_size=args.batch_size, shuffle=True)
-    valid_loader = createNeuroDataloader(valid_ds, batch_size=args.batch_size)
-    test_loader = createNeuroDataloader(test_ds, batch_size=args.batch_size)
+    workers = dict(num_workers=args.num_workers,
+                   persistent_workers=args.num_workers > 0)
+    train_loader = createNeuroDataloader(train_ds, batch_size=args.batch_size, shuffle=True, **workers)
+    valid_loader = createNeuroDataloader(valid_ds, batch_size=args.batch_size, **workers)
+    test_loader = createNeuroDataloader(test_ds, batch_size=args.batch_size, **workers)
 
     model = ArtificialAssociationNeuralNetworks(
         args.input_dim, args.hidden_dim,
@@ -225,6 +227,8 @@ def main():
     parser.add_argument('--dataset', choices=sorted(DATASETS), default='mnist')
     parser.add_argument('--version', default='gaau')
     parser.add_argument('--engine', default='flat', choices=['flat', 'recursive'])
+    parser.add_argument('--num-workers', type=int, default=0,
+                        help='dataloader workers (tree building / audio decoding)')
     parser.add_argument('--seeds', type=int, nargs='+', default=[1234, 42, 7, 2024, 31337])
     parser.add_argument('--epochs', type=int, default=10)
     parser.add_argument('--batch-size', type=int, default=100)
