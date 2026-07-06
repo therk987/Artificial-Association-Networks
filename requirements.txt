@@ -1,0 +1,16 @@
+# Core
+torch>=1.9
+numpy
+
+# Notebook / data loading
+torchvision
+pytorch-lightning
+scikit-learn        # datas/code/load.py train/valid/test split
+
+# Optional (domain-specific)
+# torchaudio        # baselines/m5.py, rnn.py, gru.py (sound)
+# torchtext         # domains/text2vec.py, baselines/scnn.py (TEXT field)
+# torch-geometric   # baselines/gcn.py, gats.py (UPFD graph baseline)
+
+# Dev
+pytest

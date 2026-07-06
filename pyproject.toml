@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "aan"
+version = "0.1.0"
+description = "All-In-One: Artificial Association Neural Networks (arXiv:2111.00424)"
+readme = "README.md"
+requires-python = ">=3.8"
+dependencies = [
+    "torch>=1.9",
+    "numpy",
+]
+
+[project.optional-dependencies]
+data = ["torchvision", "scikit-learn"]
+dev = ["pytest"]
+
+[tool.setuptools.packages.find]
+include = ["aan*"]
+
+# Dataset assets (sort neurotree pkl, SST vocab) live inside the package;
+# editable installs (`pip install -e .`) are the supported workflow.
+[tool.setuptools.package-data]
+aan = ["datas/**/*.pkl"]
