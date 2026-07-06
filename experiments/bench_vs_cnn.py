@@ -30,7 +30,7 @@ from aan.data_structures.neuronode import NeuroNode
 from aan.data_structures.batch_neurotree import BatchNeuroTree
 from aan.data_structures.neurodataloader import NeuroDataset, createNeuroDataloader
 from aan.models.artificial_association_networks import ArtificialAssociationNeuralNetworks
-from experiments.run import ClassificationHead, set_seed
+from experiments.run import ClassificationHead, set_seed, stack_outputs
 
 
 class PlainLeNet(nn.Module):
@@ -157,7 +157,7 @@ def bench_aan(args, train_x, train_y, test_x, test_y, device, engine):
 
     def step(batch, y, mt):
         outputs, _, _ = model(batch, list(mt))
-        logits = torch.stack(outputs, dim=0).squeeze(1)
+        logits = stack_outputs(outputs)
         targets = torch.stack(y, dim=0).to(device, dtype=torch.long).view(-1)
         loss = F.cross_entropy(logits, targets)
         optimizer.zero_grad()
@@ -197,7 +197,7 @@ def bench_aan(args, train_x, train_y, test_x, test_y, device, engine):
     with torch.no_grad():
         for batch, y, mt, d in test_loader:
             outputs, _, _ = model(batch, list(mt))
-            preds = torch.stack(outputs, dim=0).argmax(dim=-1).view(-1).cpu()
+            preds = stack_outputs(outputs).argmax(dim=-1).view(-1).cpu()
             targets = torch.stack(y, dim=0).view(-1)
             correct += (preds == targets).sum().item()
             total += len(y)

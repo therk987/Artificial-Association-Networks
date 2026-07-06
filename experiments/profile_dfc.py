@@ -23,7 +23,7 @@ import torch.nn.functional as F
 from aan.config.option import device as default_device
 from aan.data_structures.batch_neurotree import BatchNeuroTree
 from aan.models.artificial_association_networks import ArtificialAssociationNeuralNetworks
-from experiments.run import ClassificationHead, set_seed
+from experiments.run import ClassificationHead, set_seed, stack_outputs
 from experiments.bench_vs_cnn import load_mnist, image2neurotree, sync
 
 
@@ -64,7 +64,7 @@ def main():
 
     def forward(trees, ys):
         outputs, _, _ = model(BatchNeuroTree(trees), ['classification'] * len(trees))
-        logits = torch.stack(outputs, dim=0).squeeze(1)
+        logits = stack_outputs(outputs)
         return F.cross_entropy(logits, ys.to(device))
 
     # warmup

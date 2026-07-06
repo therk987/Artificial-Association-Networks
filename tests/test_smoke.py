@@ -90,7 +90,7 @@ def test_forward_shapes_and_grad():
     assert len(outputs) == 5
     assert outputs[0].shape[-1] == 3
 
-    loss = torch.stack(outputs).sum()
+    loss = (outputs if torch.is_tensor(outputs) else torch.stack(outputs)).sum()
     loss.backward()
     assert encoder.fc.weight.grad is not None
     assert model.ran.rnn.X2H.weight.grad is not None

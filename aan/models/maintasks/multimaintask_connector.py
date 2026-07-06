@@ -26,6 +26,14 @@ class MultiMainTaskConnector(nn.Module):
         return self.task_networks[taskname].loss(domains, preds, targets)
 
     def multi_tasking(self, h_root, allBatchNeuroTree: BatchNeuroTree, tasks):
+        # single-task fast path (the common case): run the head once on the
+        # whole batch and return the batched tensor — no per-row gathering
+        first_task = tasks[0]
+        if all(t == first_task for t in tasks):
+            if not torch.is_tensor(h_root):
+                h_root = torch.stack(list(h_root), dim=0)
+            return self.task_networks[first_task](h_root, allBatchNeuroTree)
+
         batch_tree_dict = defaultdict(list)
         batch_hidden_dict = defaultdict(list)
         batch_indices_to_task_indices = {}

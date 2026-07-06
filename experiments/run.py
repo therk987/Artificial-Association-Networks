@@ -52,6 +52,13 @@ class ClassificationHead(nn.Module):
         return self.layer(hiddens)
 
 
+def stack_outputs(outputs):
+    """Main-task outputs: a tensor (single-task fast path) or a list of rows."""
+    if torch.is_tensor(outputs):
+        return outputs
+    return torch.stack(outputs, dim=0).squeeze(1)
+
+
 # ---------------------------------------------------------------------------
 # dataset registry: name -> builder returning
 #   (train_ds, valid_ds, test_ds, feature_encoders, class_count)
@@ -162,7 +169,7 @@ def evaluate(model, loader, device):
     with torch.no_grad():
         for batch, y, mt, d in loader:
             outputs, _, _ = model(batch, list(mt))
-            preds = torch.stack(outputs, dim=0).argmax(dim=-1).squeeze(-1)
+            preds = stack_outputs(outputs).argmax(dim=-1)
             targets = torch.stack(y, dim=0).to(device, dtype=torch.long)
             correct += (preds.view(-1) == targets.view(-1)).sum().item()
             total += len(y)
@@ -193,7 +200,7 @@ def run_one_seed(args, seed, device):
         t0 = time.perf_counter()
         for batch, y, mt, d in train_loader:
             outputs, _, _ = model(batch, list(mt))
-            logits = torch.stack(outputs, dim=0).squeeze(1)
+            logits = stack_outputs(outputs)
             targets = torch.stack(y, dim=0).to(device, dtype=torch.long).view(-1)
             loss = F.cross_entropy(logits, targets)
             optimizer.zero_grad()
