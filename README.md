@@ -60,4 +60,5 @@ Model versions: `ran` (RNN+GCN), `raan` (RNN+GAT), `gau` (GRU+GCN),
   which remaps it transparently.
 - Text extractors (`domains/text2vec.py`, `baselines/scnn.py`) expect a
   torchtext(-legacy) `TEXT` field object injected by the caller.
-- Performance work (flattened, level-bucketed DFC) is tracked in
+- Use `benchmarks/bench_dfc.py` to measure DFC engine throughput when
+  comparing engine changes.
