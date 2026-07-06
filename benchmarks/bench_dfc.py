@@ -80,25 +80,30 @@ def bench(model, depth, branching, batch_size, with_adjacency, warmup=2, iters=1
 
 
 def main():
-    torch.manual_seed(1234)
-    model = ArtificialAssociationNeuralNetworks(
-        FEATURE_DIM, HIDDEN_DIM,
-        {'toy': ToyEncoder()}, {}, {}, {'classification': ToyHead()},
-        version='gaau',
-    ).to(device)
-    model.eval()
+    models = {}
+    for engine in ('recursive', 'flat'):
+        torch.manual_seed(1234)
+        models[engine] = ArtificialAssociationNeuralNetworks(
+            FEATURE_DIM, HIDDEN_DIM,
+            {'toy': ToyEncoder()}, {}, {}, {'classification': ToyHead()},
+            version='gaau', engine=engine,
+        ).to(device)
+        models[engine].eval()
 
     print('device: {}   (trees/sec, higher is better)'.format(device))
-    print('{:>6} {:>10} {:>7} {:>6} {:>12}'.format('depth', 'branching', 'batch', 'A_c', 'trees/s'))
+    print('{:>6} {:>10} {:>7} {:>6} {:>12} {:>12} {:>8}'.format(
+        'depth', 'branching', 'batch', 'A_c', 'recursive', 'flat', 'speedup'))
     configs = [
         (2, 1, 100), (8, 1, 100), (32, 1, 100),   # chain trees (RNN-like)
         (2, 4, 100), (4, 3, 50),                  # bushy trees (GNN-like)
     ]
     for depth, branching, batch in configs:
         for with_adj in (False, True):
-            tps = bench(model, depth, branching, batch, with_adj)
-            print('{:>6} {:>10} {:>7} {:>6} {:>12.1f}'.format(
-                depth, branching, batch, 'yes' if with_adj else 'no', tps))
+            tps = {engine: bench(models[engine], depth, branching, batch, with_adj)
+                   for engine in ('recursive', 'flat')}
+            print('{:>6} {:>10} {:>7} {:>6} {:>12.1f} {:>12.1f} {:>7.1f}x'.format(
+                depth, branching, batch, 'yes' if with_adj else 'no',
+                tps['recursive'], tps['flat'], tps['flat'] / tps['recursive']))
 
 
 if __name__ == '__main__':
