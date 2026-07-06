@@ -1,14 +1,14 @@
 """Multi-seed experiment runner for AAN classification experiments.
 
 Supports the paper-revision experiment protocol: every configuration is run
-over several seeds and reported as mean +/- std (REVISION goal: statistical
-grounding for the multi-domain parity/transfer claims).
+over several seeds and reported as mean +/- std. Datasets can be combined
+with commas for multi-domain simultaneous learning (paper, Experiment 1)
+using a joint label space, e.g.:
 
-Run from the repository root, e.g.:
-    python experiments/run.py --dataset mnist --version gaau --epochs 5 \
-        --seeds 1234 42 7 --out results/mnist_gaau.csv
+    python experiments/run.py --dataset mnist --epochs 5 --seeds 1234 42 7
+    python experiments/run.py --dataset mnist,speechcommands,imdb --epochs 10
 
-Use --limit for a quick smoke run (subsample the training set).
+Use --limit for a quick smoke run (subsample each domain's training set).
 """
 import argparse
 import csv
@@ -17,6 +17,7 @@ import random
 import statistics
 import sys
 import time
+from collections import defaultdict
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -60,8 +61,8 @@ def stack_outputs(outputs):
 
 
 # ---------------------------------------------------------------------------
-# dataset registry: name -> builder returning
-#   (train_ds, valid_ds, test_ds, feature_encoders, class_count)
+# per-domain "parts": {'domain', 'splits': {name: (xs, ys)}, 'builder',
+#                      'encoder', 'classes'} — combined by build_from_parts
 # ---------------------------------------------------------------------------
 
 def mnist_image2neurotree(data, mt):
@@ -87,14 +88,20 @@ class SoundTreeBuilder(object):
         return NeuroNode(None, None, C=[leaf])
 
 
-def build_mnist(limit=None):
+def text2neurotree(data, mt):
+    leaf = NeuroNode(data, 'text')
+    return NeuroNode(None, None, C=[leaf])
+
+
+def _data_root(*parts):
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'aan', 'datas', *parts)
+
+
+def mnist_parts(limit=None):
     from aan.datas.image.load import MNIST_DATA
     from aan.models.feature_encoders.domains.image2vec import LeNet_5
 
-    data_root = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                             '..', 'aan', 'datas', 'image')
-    # raw 28x28 tensors, as in the notebook (transforms are bypassed below)
-    mnist_train, mnist_test = MNIST_DATA(data_root, resize_shape=(28, 28))
+    mnist_train, mnist_test = MNIST_DATA(_data_root('image'), resize_shape=(28, 28))
 
     train_x = mnist_train.data.unsqueeze(1)
     train_y = mnist_train.targets
@@ -107,28 +114,22 @@ def build_mnist(limit=None):
     if limit:
         test_x, test_y = test_x[:limit], test_y[:limit]
 
-    builders = {'image': mnist_image2neurotree}
-    maintask_map = {'image': 'classification'}
+    return {
+        'domain': 'image',
+        'splits': {'train': (train_x, train_y), 'valid': (valid_x, valid_y),
+                   'test': (test_x, test_y)},
+        'builder': mnist_image2neurotree,
+        'encoder': LeNet_5(conv3_kernel=4),
+        'classes': 10,
+    }
 
-    def dataset(x, y):
-        return NeuroDataset({'image': x}, {'image': y}, maintask_map, builders)
 
-    feature_encoders = {'image': LeNet_5(conv3_kernel=4)}
-    return dataset(train_x, train_y), dataset(valid_x, valid_y), dataset(test_x, test_y), \
-        feature_encoders, 10
-
-
-def build_speechcommands(limit=None):
-    """Speech Commands v0.02, 35 classes, raw 16 kHz waveforms + M5 (paper, Exp. 1).
-
-    Audio files are loaded lazily inside the neurotree builder, so memory
-    stays bounded; requires torchaudio.
-    """
+def speechcommands_parts(limit=None):
+    """Speech Commands v0.02, 35 classes, raw 16 kHz waveforms + M5 (paper, Exp. 1)."""
     import torchaudio
     from aan.models.feature_encoders.domains.sound2vec import M5_GroupNorm
 
-    data_root = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                             '..', 'aan', 'datas', 'sound')
+    data_root = _data_root('sound')
     os.makedirs(data_root, exist_ok=True)
 
     subsets = {}
@@ -145,47 +146,119 @@ def build_speechcommands(limit=None):
                           for i in range(len(subsets['training']))})
     label_index = {name: i for i, name in enumerate(label_names)}
 
-    def dataset_of(name):
+    split_names = (('train', 'training'), ('valid', 'validation'), ('test', 'testing'))
+    splits = {}
+    for split, name in split_names:
         ds = subsets[name]
-        n = len(ds)
-        if limit:
-            n = min(n, limit)
+        n = min(len(ds), limit) if limit else len(ds)
         indices = list(range(n))
         ys = [torch.tensor(label_index[label_of(ds, i)]) for i in indices]
-        return NeuroDataset({'sound': indices}, {'sound': ys},
-                            {'sound': 'classification'},
-                            {'sound': SoundTreeBuilder(ds)})
+        splits[split] = (indices, ys)
 
-    feature_encoders = {'sound': M5_GroupNorm(output_size=128)}
-    return dataset_of('training'), dataset_of('validation'), dataset_of('testing'), \
-        feature_encoders, len(label_names)
+    return {
+        'domain': 'sound',
+        'splits': splits,
+        'builder_per_split': {split: SoundTreeBuilder(subsets[name])
+                              for split, name in split_names},
+        'encoder': M5_GroupNorm(output_size=128),
+        'classes': len(label_names),
+    }
 
 
-DATASETS = {
-    'mnist': build_mnist,
-    'speechcommands': build_speechcommands,
+def imdb_parts(limit=None):
+    from aan.datas.text.load import IMDB_DATA
+    from aan.models.feature_encoders.domains.text2vec import TextCNNEncoder
+
+    train_x, train_y, valid_x, valid_y, test_x, test_y, vocab = \
+        IMDB_DATA(_data_root('text'))
+    if limit:
+        train_x, train_y = train_x[:limit], train_y[:limit]
+        valid_x, valid_y = valid_x[:limit], valid_y[:limit]
+        test_x, test_y = test_x[:limit], test_y[:limit]
+
+    return {
+        'domain': 'text',
+        'splits': {'train': (train_x, train_y), 'valid': (valid_x, valid_y),
+                   'test': (test_x, test_y)},
+        'builder': text2neurotree,
+        'encoder': TextCNNEncoder(vocab_size=len(vocab)),
+        'classes': 2,
+    }
+
+
+PARTS = {
+    'mnist': mnist_parts,
+    'speechcommands': speechcommands_parts,
+    'imdb': imdb_parts,
 }
+
+# backward-compatible alias (bench scripts referenced DATASETS)
+DATASETS = PARTS
+
+
+def build_from_parts(parts_list):
+    """Combine domains into joint-label datasets (paper's 47-class setting)."""
+    offsets = {}
+    total_classes = 0
+    for p in parts_list:
+        offsets[p['domain']] = total_classes
+        total_classes += p['classes']
+
+    datasets = {}
+    for split in ('train', 'valid', 'test'):
+        x_map, y_map, builders = {}, {}, {}
+        for p in parts_list:
+            xs, ys = p['splits'][split]
+            offset = offsets[p['domain']]
+            if torch.is_tensor(ys):
+                ys = ys + offset
+            else:
+                ys = [y + offset for y in ys]
+            x_map[p['domain']] = xs
+            y_map[p['domain']] = ys
+            per_split = p.get('builder_per_split')
+            builders[p['domain']] = per_split[split] if per_split else p['builder']
+        maintask_map = {p['domain']: 'classification' for p in parts_list}
+        datasets[split] = NeuroDataset(x_map, y_map, maintask_map, builders)
+
+    encoders = {p['domain']: p['encoder'] for p in parts_list}
+    return datasets['train'], datasets['valid'], datasets['test'], encoders, total_classes
+
+
+def build_dataset(name, limit=None):
+    names = [n.strip() for n in name.split(',') if n.strip()]
+    unknown = [n for n in names if n not in PARTS]
+    if unknown:
+        raise ValueError('unknown dataset(s) {} (available: {})'.format(
+            unknown, sorted(PARTS)))
+    return build_from_parts([PARTS[n](limit) for n in names])
 
 
 # ---------------------------------------------------------------------------
 
 def evaluate(model, loader, device):
+    """Return (overall accuracy, per-domain accuracy dict)."""
     model.eval()
-    correct = total = 0
+    correct = defaultdict(int)
+    total = defaultdict(int)
     with torch.no_grad():
         for batch, y, mt, d in loader:
             outputs, _, _ = model(batch, list(mt))
-            preds = stack_outputs(outputs).argmax(dim=-1)
-            targets = torch.stack(y, dim=0).to(device, dtype=torch.long)
-            correct += (preds.view(-1) == targets.view(-1)).sum().item()
-            total += len(y)
-    return correct / max(total, 1)
+            preds = stack_outputs(outputs).argmax(dim=-1).view(-1)
+            targets = torch.stack(y, dim=0).to(device, dtype=torch.long).view(-1)
+            hits = (preds == targets).cpu()
+            for i, domain in enumerate(d):
+                correct[domain] += int(hits[i])
+                total[domain] += 1
+    overall = sum(correct.values()) / max(sum(total.values()), 1)
+    per_domain = {k: correct[k] / total[k] for k in sorted(total)}
+    return overall, per_domain
 
 
 def run_one_seed(args, seed, device):
     set_seed(seed)
     train_ds, valid_ds, test_ds, feature_encoders, class_count = \
-        DATASETS[args.dataset](limit=args.limit)
+        build_dataset(args.dataset, limit=args.limit)
 
     workers = dict(num_workers=args.num_workers,
                    persistent_workers=args.num_workers > 0)
@@ -201,7 +274,7 @@ def run_one_seed(args, seed, device):
     ).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
 
-    best_valid, best_test, best_epoch = 0.0, 0.0, -1
+    best = {'valid_acc': 0.0, 'test_acc': 0.0, 'epoch': -1, 'per_domain': {}}
     for epoch in range(args.epochs):
         model.train()
         epoch_loss = 0.0
@@ -216,21 +289,23 @@ def run_one_seed(args, seed, device):
             optimizer.step()
             epoch_loss += loss.item()
 
-        valid_acc = evaluate(model, valid_loader, device)
-        if valid_acc >= best_valid:  # model selection on validation accuracy
-            best_valid = valid_acc
-            best_test = evaluate(model, test_loader, device)
-            best_epoch = epoch
+        valid_acc, _ = evaluate(model, valid_loader, device)
+        if valid_acc >= best['valid_acc']:  # model selection on validation accuracy
+            test_acc, per_domain = evaluate(model, test_loader, device)
+            best.update(valid_acc=valid_acc, test_acc=test_acc,
+                        epoch=epoch, per_domain=per_domain)
         print('  seed {} epoch {}: loss {:.4f} valid {:.4f} ({:.1f}s)'.format(
             seed, epoch, epoch_loss / max(len(train_loader), 1), valid_acc,
             time.perf_counter() - t0), flush=True)
 
-    return {'seed': seed, 'valid_acc': best_valid, 'test_acc': best_test, 'epoch': best_epoch}
+    return {'seed': seed, 'valid_acc': best['valid_acc'], 'test_acc': best['test_acc'],
+            'epoch': best['epoch'], 'per_domain': best['per_domain']}
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--dataset', choices=sorted(DATASETS), default='mnist')
+    parser.add_argument('--dataset', default='mnist',
+                        help='domain name or comma-combined list ({})'.format(sorted(PARTS)))
     parser.add_argument('--version', default='gaau')
     parser.add_argument('--engine', default='flat', choices=['flat', 'recursive'])
     parser.add_argument('--num-workers', type=int, default=0,
@@ -242,33 +317,45 @@ def main():
     parser.add_argument('--input-dim', type=int, default=128)
     parser.add_argument('--hidden-dim', type=int, default=128)
     parser.add_argument('--limit', type=int, default=None,
-                        help='subsample train/test for a quick smoke run')
+                        help='subsample each domain for a quick smoke run')
     parser.add_argument('--device', default=default_device)
     parser.add_argument('--out', default=None, help='CSV path for per-seed results')
     args = parser.parse_args()
 
-    print('dataset={} version={} device={} seeds={}'.format(
-        args.dataset, args.version, args.device, args.seeds), flush=True)
+    print('dataset={} version={} engine={} device={} seeds={}'.format(
+        args.dataset, args.version, args.engine, args.device, args.seeds), flush=True)
 
     results = []
     for seed in args.seeds:
         results.append(run_one_seed(args, seed, args.device))
-        print('seed {} -> test {:.4f} (valid {:.4f}, epoch {})'.format(
-            results[-1]['seed'], results[-1]['test_acc'],
-            results[-1]['valid_acc'], results[-1]['epoch']), flush=True)
+        r = results[-1]
+        domains = '  '.join('{} {:.4f}'.format(k, v) for k, v in r['per_domain'].items())
+        print('seed {} -> test {:.4f} (valid {:.4f}, epoch {})  [{}]'.format(
+            r['seed'], r['test_acc'], r['valid_acc'], r['epoch'], domains), flush=True)
 
     accs = [r['test_acc'] for r in results]
     mean = statistics.mean(accs)
     std = statistics.stdev(accs) if len(accs) > 1 else 0.0
     print('== {} {}: test acc {:.4f} +/- {:.4f} over {} seeds =='.format(
         args.dataset, args.version, mean, std, len(accs)), flush=True)
+    domains = sorted(results[0]['per_domain'])
+    if len(domains) > 1:
+        for domain in domains:
+            vals = [r['per_domain'][domain] for r in results]
+            dstd = statistics.stdev(vals) if len(vals) > 1 else 0.0
+            print('   {}: {:.4f} +/- {:.4f}'.format(
+                domain, statistics.mean(vals), dstd), flush=True)
 
     if args.out:
         os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
         with open(args.out, 'w', newline='') as f:
-            writer = csv.DictWriter(f, fieldnames=['seed', 'valid_acc', 'test_acc', 'epoch'])
+            fields = ['seed', 'valid_acc', 'test_acc', 'epoch'] + domains
+            writer = csv.DictWriter(f, fieldnames=fields)
             writer.writeheader()
-            writer.writerows(results)
+            for r in results:
+                row = {k: r[k] for k in ('seed', 'valid_acc', 'test_acc', 'epoch')}
+                row.update(r['per_domain'])
+                writer.writerow(row)
         print('wrote', args.out)
 
 

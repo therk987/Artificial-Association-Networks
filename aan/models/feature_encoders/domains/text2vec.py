@@ -57,3 +57,41 @@ class ConvolutionalSentimentNetworks(nn.Module):
 
     def setting_pretrained_model(self, model):
         self.convs = model.convs
+
+
+class TextCNNEncoder(nn.Module):
+    """torchtext-free psi_text: the same Kim-2014 CNN over pre-tokenized id
+    tensors stored on the leaf nodes, with a trainable embedding.
+
+    (The paper's version used frozen GloVe vectors via torchtext; torchtext
+    is deprecated upstream, so the revision experiments train the embedding
+    from scratch — note this when comparing against the original numbers.)
+    """
+
+    def __init__(self, vocab_size, output_dim=128,
+                 embedding_dim=100, n_filters=100, filter_sizes=(3, 4, 5),
+                 dropout=0.0, pad_idx=0):
+        super().__init__()
+        self.embedding = nn.Embedding(vocab_size, embedding_dim, padding_idx=pad_idx)
+
+        self.convs = nn.ModuleList([
+            nn.Conv2d(in_channels=1, out_channels=n_filters,
+                      kernel_size=(fs, embedding_dim))
+            for fs in filter_sizes
+        ])
+        self.fc = nn.Linear(len(filter_sizes) * n_filters, output_dim)
+        self.dropout = nn.Dropout(dropout)
+
+        for conv in self.convs:
+            nn.init.xavier_uniform_(conv.weight.data, gain=1.414)
+        nn.init.xavier_uniform_(self.fc.weight.data, gain=1.414)
+
+    def forward(self, batch_tree: BatchNeuroTree):
+        device = self.fc.weight.device
+        text_matrix = torch.stack(batch_tree.getX()).to(device)  # (B, L) long
+
+        embedded = self.embedding(text_matrix).unsqueeze(1)
+        conved = [F.relu(conv(embedded)).squeeze(3) for conv in self.convs]
+        pooled = [F.max_pool1d(c, c.shape[2]).squeeze(2) for c in conved]
+        cat = self.dropout(torch.cat(pooled, dim=1))
+        return self.fc(cat)

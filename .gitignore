@@ -134,3 +134,9 @@ dmypy.json
 
 # datasets downloaded at runtime
 aan/datas/image/MNIST/
+
+# downloaded text data / caches
+aan/datas/text/aclImdb/
+aan/datas/text/aclImdb_v1.tar.gz
+aan/datas/text/imdb_cache*.pkl
+aan/datas/sound/SpeechCommands/
