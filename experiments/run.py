@@ -93,8 +93,64 @@ def build_mnist(limit=None):
         feature_encoders, 10
 
 
+def build_speechcommands(limit=None):
+    """Speech Commands v0.02, 35 classes, raw 16 kHz waveforms + M5 (paper, Exp. 1).
+
+    Audio files are loaded lazily inside the neurotree builder, so memory
+    stays bounded; requires torchaudio.
+    """
+    import torchaudio
+    from aan.models.feature_encoders.domains.sound2vec import M5_GroupNorm
+
+    data_root = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                             '..', 'aan', 'datas', 'sound')
+    os.makedirs(data_root, exist_ok=True)
+
+    subsets = {}
+    for name in ('training', 'validation', 'testing'):
+        subsets[name] = torchaudio.datasets.SPEECHCOMMANDS(
+            data_root, download=True, subset=name)
+
+    def label_of(dataset, idx):
+        # _walker holds file paths; the label is the parent directory name
+        path = dataset._walker[idx]
+        return os.path.basename(os.path.dirname(path))
+
+    label_names = sorted({label_of(subsets['training'], i)
+                          for i in range(len(subsets['training']))})
+    label_index = {name: i for i, name in enumerate(label_names)}
+
+    def make_builder(dataset):
+        def sound2neurotree(idx, mt):
+            waveform, sample_rate, label, _, _ = dataset[idx]
+            wav = waveform[:1, :]
+            if wav.shape[1] < 16000:  # pad/trim to 1 second at 16 kHz
+                wav = F.pad(wav, (0, 16000 - wav.shape[1]))
+            else:
+                wav = wav[:, :16000]
+            leaf = NeuroNode(wav, 'sound')
+            return NeuroNode(None, None, C=[leaf])
+        return sound2neurotree
+
+    def dataset_of(name):
+        ds = subsets[name]
+        n = len(ds)
+        if limit:
+            n = min(n, limit)
+        indices = list(range(n))
+        ys = [torch.tensor(label_index[label_of(ds, i)]) for i in indices]
+        return NeuroDataset({'sound': indices}, {'sound': ys},
+                            {'sound': 'classification'},
+                            {'sound': make_builder(ds)})
+
+    feature_encoders = {'sound': M5_GroupNorm(output_size=128)}
+    return dataset_of('training'), dataset_of('validation'), dataset_of('testing'), \
+        feature_encoders, len(label_names)
+
+
 DATASETS = {
     'mnist': build_mnist,
+    'speechcommands': build_speechcommands,
 }
 
 
