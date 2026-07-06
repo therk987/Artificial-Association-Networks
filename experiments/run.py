@@ -64,6 +64,29 @@ def stack_outputs(outputs):
 #   (train_ds, valid_ds, test_ds, feature_encoders, class_count)
 # ---------------------------------------------------------------------------
 
+def mnist_image2neurotree(data, mt):
+    leaf = NeuroNode(data.to(dtype=torch.float) / 255, 'image')
+    mid = NeuroNode(None, None, C=[leaf])
+    return NeuroNode(None, None, C=[mid])
+
+
+class SoundTreeBuilder(object):
+    """Picklable lazy audio -> neurotree builder (dataloader-worker safe)."""
+
+    def __init__(self, dataset):
+        self.dataset = dataset
+
+    def __call__(self, idx, mt):
+        waveform, sample_rate, label, _, _ = self.dataset[idx]
+        wav = waveform[:1, :]
+        if wav.shape[1] < 16000:  # pad/trim to 1 second at 16 kHz
+            wav = F.pad(wav, (0, 16000 - wav.shape[1]))
+        else:
+            wav = wav[:, :16000]
+        leaf = NeuroNode(wav, 'sound')
+        return NeuroNode(None, None, C=[leaf])
+
+
 def build_mnist(limit=None):
     from aan.datas.image.load import MNIST_DATA
     from aan.models.feature_encoders.domains.image2vec import LeNet_5
@@ -84,12 +107,7 @@ def build_mnist(limit=None):
     if limit:
         test_x, test_y = test_x[:limit], test_y[:limit]
 
-    def image2neurotree(data, mt):
-        leaf = NeuroNode(data.to(dtype=torch.float) / 255, 'image')
-        mid = NeuroNode(None, None, C=[leaf])
-        return NeuroNode(None, None, C=[mid])
-
-    builders = {'image': image2neurotree}
+    builders = {'image': mnist_image2neurotree}
     maintask_map = {'image': 'classification'}
 
     def dataset(x, y):
@@ -127,18 +145,6 @@ def build_speechcommands(limit=None):
                           for i in range(len(subsets['training']))})
     label_index = {name: i for i, name in enumerate(label_names)}
 
-    def make_builder(dataset):
-        def sound2neurotree(idx, mt):
-            waveform, sample_rate, label, _, _ = dataset[idx]
-            wav = waveform[:1, :]
-            if wav.shape[1] < 16000:  # pad/trim to 1 second at 16 kHz
-                wav = F.pad(wav, (0, 16000 - wav.shape[1]))
-            else:
-                wav = wav[:, :16000]
-            leaf = NeuroNode(wav, 'sound')
-            return NeuroNode(None, None, C=[leaf])
-        return sound2neurotree
-
     def dataset_of(name):
         ds = subsets[name]
         n = len(ds)
@@ -148,7 +154,7 @@ def build_speechcommands(limit=None):
         ys = [torch.tensor(label_index[label_of(ds, i)]) for i in indices]
         return NeuroDataset({'sound': indices}, {'sound': ys},
                             {'sound': 'classification'},
-                            {'sound': make_builder(ds)})
+                            {'sound': SoundTreeBuilder(ds)})
 
     feature_encoders = {'sound': M5_GroupNorm(output_size=128)}
     return dataset_of('training'), dataset_of('validation'), dataset_of('testing'), \
