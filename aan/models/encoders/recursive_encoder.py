@@ -68,6 +68,10 @@ class RecursiveAssociationNeuralNetworks(nn.Module):
         self.rnn, self.gnn = build_cells(version, self.input_dim_with_bias, hidden_dim)
         self.readout = MaxpoolReadoutLayer()
 
+        # Root dx/dh accumulation is only needed by the DFD (decoder) pass;
+        # the AAN wrapper enables it when restoration networks are configured.
+        self.store_deconv_inputs = False
+
     def deepFirstConvolution(self, all_batch_tree: BatchNeuroTree, level, node_level):
         all_batch_tree.visit()
         batch_tree = all_batch_tree.get_no_calculated()
@@ -95,7 +99,7 @@ class RecursiveAssociationNeuralNetworks(nn.Module):
         hiddens = self.rnn(node_features, hiddens)
 
         batch_tree.setHiddens(hiddens.squeeze(1))
-        if level == 0:
+        if level == 0 and self.store_deconv_inputs:
             batch_tree.set_xh(node_features.squeeze(1), hiddens.squeeze(1))
 
         if node_level:

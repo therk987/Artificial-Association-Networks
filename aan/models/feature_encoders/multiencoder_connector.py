@@ -29,32 +29,43 @@ class MultiExtractionConnector(nn.Module):
         self.register_buffer('layer_input_bias', torch.zeros(1, type_count))
 
     def typeEmbedding(self, batch_tree):
+        batch_size = len(batch_tree.nodes)
         batch_tree_dict = defaultdict(list)
-        batch_indices_to_type_indices = {}
-        batch_output_dict = {}
+        batch_domain_indices = defaultdict(list)
 
-        for i in range(len(batch_tree.nodes)):
+        for i in range(batch_size):
             domain_name = batch_tree.get_i('t_d', i)
-            batch_indices_to_type_indices[i] = (domain_name, len(batch_tree_dict[domain_name]))
             batch_tree_dict[domain_name].append(batch_tree.nodes[i])
+            batch_domain_indices[domain_name].append(i)
 
+        # single-domain fast path (very common per DFC level)
+        if len(batch_tree_dict) == 1:
+            domain_name = next(iter(batch_tree_dict))
+            return self._embed_domain(domain_name, batch_tree_dict[domain_name]).unsqueeze(1)
+
+        # multi-domain: concat per-domain outputs once, then restore batch
+        # order with a single index_select instead of per-row gathering
+        chunks = []
+        order = []
         for domain_name, domain_tree_list in batch_tree_dict.items():
-            if domain_name is None or domain_name == 'layer':
-                type_features = self.layer_input.repeat(len(domain_tree_list), 1)
-                type_vector = self.layer_input_bias.repeat(len(domain_tree_list), 1)
-            else:
-                domain_batch_tree = BatchNeuroTree(domain_tree_list)
-                type_features = self.feature_extraction_networks[domain_name](domain_batch_tree)
-                type_vector = self.type_bias[self.type_keys.index(domain_name)] \
-                    .unsqueeze(0).repeat(len(domain_tree_list), 1)
+            chunks.append(self._embed_domain(domain_name, domain_tree_list))
+            order.extend(batch_domain_indices[domain_name])
+        stacked = torch.cat(chunks, dim=0)
+        inverse = torch.empty(batch_size, dtype=torch.long, device=stacked.device)
+        inverse[torch.as_tensor(order, device=stacked.device)] = \
+            torch.arange(batch_size, device=stacked.device)
+        return stacked[inverse].unsqueeze(1)
 
-            batch_output_dict[domain_name] = torch.cat([type_features, type_vector], dim=-1)
-
-        outputs = [
-            batch_output_dict[domain_name][domain_index]
-            for domain_name, domain_index in batch_indices_to_type_indices.values()
-        ]
-        return torch.stack(outputs, dim=0).unsqueeze(1)
+    def _embed_domain(self, domain_name, domain_tree_list):
+        if domain_name is None or domain_name == 'layer':
+            type_features = self.layer_input.repeat(len(domain_tree_list), 1)
+            type_vector = self.layer_input_bias.repeat(len(domain_tree_list), 1)
+        else:
+            domain_batch_tree = BatchNeuroTree(domain_tree_list)
+            type_features = self.feature_extraction_networks[domain_name](domain_batch_tree)
+            type_vector = self.type_bias[self.type_keys.index(domain_name)] \
+                .unsqueeze(0).repeat(len(domain_tree_list), 1)
+        return torch.cat([type_features, type_vector], dim=-1)
 
     def forward(self, batch_tree):
         return self.typeEmbedding(batch_tree)

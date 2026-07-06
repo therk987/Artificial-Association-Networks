@@ -39,6 +39,8 @@ class ArtificialAssociationNeuralNetworks(nn.Module):
             self.multi_sub_task_networks,
             version=version,
         )
+        # root dx/dh accumulation is only needed when a decoder (DFD) is used
+        self.ran.store_deconv_inputs = len(feature_decoders) > 0
 
     def forward(self, batchNeuroTree, tasks, node_level=False):
         h_root, batchNeuroTree = self.propagate(batchNeuroTree, node_level)

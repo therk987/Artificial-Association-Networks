@@ -137,6 +137,11 @@ class BatchNeuroTree(object):
         max_child_count = self.get_child_count()
         if max_child_count == 0:
             return None
+        if max_child_count == 1:
+            # chain-shaped level: one stack for the whole batch instead of
+            # one stack per node (thousands of small CUDA kernels per epoch)
+            hiddens = [node.C[0].h if node.C else zero_vector for node in self.nodes]
+            return torch.stack(hiddens, dim=0).unsqueeze(1)
         batch_hiddens = []
         for node in self.nodes:
             hiddens = [child.h for child in node.C]
