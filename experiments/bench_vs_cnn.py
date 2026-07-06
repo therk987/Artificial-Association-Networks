@@ -139,7 +139,7 @@ def image2neurotree(data, mt):
     return NeuroNode(None, None, C=[mid])
 
 
-def bench_aan(args, train_x, train_y, test_x, test_y, device):
+def bench_aan(args, train_x, train_y, test_x, test_y, device, engine):
     from aan.models.feature_encoders.domains.image2vec import LeNet_5
 
     set_seed(1234)
@@ -147,7 +147,7 @@ def bench_aan(args, train_x, train_y, test_x, test_y, device):
         128, 128,
         {'image': LeNet_5(conv3_kernel=4)}, {}, {},
         {'classification': ClassificationHead(128, 10)},
-        version=args.version,
+        version=args.version, engine=engine,
     ).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
 
@@ -226,18 +226,22 @@ def main():
 
     cnn = bench_cnn(args, train_x, train_y, test_x, test_y, args.device)
     print('CNN  done', flush=True)
-    aan = bench_aan(args, train_x, train_y, test_x, test_y, args.device)
-    print('AAN  done', flush=True)
+    rows = [('CNN (LeNet-5)', cnn)]
+    for engine in ('recursive', 'flat'):
+        r = bench_aan(args, train_x, train_y, test_x, test_y, args.device, engine)
+        print('AAN/{} done'.format(engine), flush=True)
+        rows.append(('AAN {}/{}'.format(args.version, engine), r))
 
-    header = '{:<14} {:>14} {:>14} {:>11} {:>9}'.format(
+    header = '{:<20} {:>14} {:>14} {:>11} {:>9}'.format(
         'model', 'train samp/s', 'fwd+bwd samp/s', 'epoch sec', 'test acc')
     print(header)
     print('-' * len(header))
-    for name, r in (('CNN (LeNet-5)', cnn), ('AAN ({})'.format(args.version), aan)):
-        print('{:<14} {:>14.0f} {:>14.0f} {:>11.1f} {:>9.4f}'.format(
+    for name, r in rows:
+        print('{:<20} {:>14.0f} {:>14.0f} {:>11.1f} {:>9.4f}'.format(
             name, r['train_sps'], r['fb_sps'], r['epoch_sec'], r['test_acc']))
-    print('AAN/CNN slowdown: {:.1f}x (full pipeline), {:.1f}x (fwd+bwd only)'.format(
-        cnn['train_sps'] / aan['train_sps'], cnn['fb_sps'] / aan['fb_sps']))
+    for name, r in rows[1:]:
+        print('{}: {:.1f}x slower than CNN (full), {:.1f}x (fwd+bwd only)'.format(
+            name, cnn['train_sps'] / r['train_sps'], cnn['fb_sps'] / r['fb_sps']))
 
 
 if __name__ == '__main__':

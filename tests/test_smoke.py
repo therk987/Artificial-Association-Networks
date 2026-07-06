@@ -50,12 +50,12 @@ class ToyClassifier(nn.Module):
         return self.layer(hiddens)
 
 
-def make_model(version='gaau'):
+def make_model(version='gaau', engine='flat'):
     encoder = CountingToyEncoder()
     model = ArtificialAssociationNeuralNetworks(
         FEATURE_DIM, HIDDEN_DIM,
         {'toy': encoder}, {}, {}, {'classification': ToyClassifier()},
-        version=version,
+        version=version, engine=engine,
     )
     return model, encoder
 
@@ -114,21 +114,29 @@ def test_version_validation():
 
 
 def test_multiparent_computed_once():
-    model, encoder = make_model()
+    # both engines must extract/compute a shared node exactly once
+    for engine in ('recursive', 'flat'):
+        model, encoder = make_model(engine=engine)
+        root, shared = make_multiparent_tree()
+        batch = BatchNeuroTree([root])
+
+        model(batch, ['classification'])
+
+        # 3 'toy' nodes exist (shared leaf + 2 mids); shared extracted once
+        assert encoder.processed_nodes == 3, engine
+
+    # recursive-engine bookkeeping: visit counts and stored hidden
+    model, _ = make_model(engine='recursive')
     root, shared = make_multiparent_tree()
-    batch = BatchNeuroTree([root])
-
-    model(batch, ['classification'])
-
-    # 3 'toy' nodes exist (shared leaf + 2 mids); shared must be extracted once
-    assert encoder.processed_nodes == 3
+    model(BatchNeuroTree([root]), ['classification'])
     assert shared.count == 2  # visited via both parents
     assert shared.h is not None
 
 
 def test_node_reset_state():
+    # per-node state is written by the recursive engine
     root, shared = make_multiparent_tree()
-    model, _ = make_model()
+    model, _ = make_model(engine='recursive')
     model(BatchNeuroTree([root]), ['classification'])
     assert root.h is not None
 

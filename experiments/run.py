@@ -182,7 +182,7 @@ def run_one_seed(args, seed, device):
         args.input_dim, args.hidden_dim,
         feature_encoders, {}, {},
         {'classification': ClassificationHead(args.hidden_dim, class_count)},
-        version=args.version,
+        version=args.version, engine=args.engine,
     ).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
 
@@ -217,6 +217,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--dataset', choices=sorted(DATASETS), default='mnist')
     parser.add_argument('--version', default='gaau')
+    parser.add_argument('--engine', default='flat', choices=['flat', 'recursive'])
     parser.add_argument('--seeds', type=int, nargs='+', default=[1234, 42, 7, 2024, 31337])
     parser.add_argument('--epochs', type=int, default=10)
     parser.add_argument('--batch-size', type=int, default=100)
