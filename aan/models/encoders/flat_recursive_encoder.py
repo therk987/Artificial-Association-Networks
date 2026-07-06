@@ -17,8 +17,10 @@ here; use the recursive engine for LAN).
 
 Why: the recursive engine stores hidden states as per-node attributes, which
 splits every level's tensor into rows and re-assembles them later; the tiny
-select/stack ops dominate backward time on GPU. Here hidden states live in
-one growing (N, H) buffer and children are fetched with a single gather.
+select/stack ops dominate backward time on GPU. Here hidden states stay as
+per-level tensors: chain-shaped levels pass the previous level's output
+through directly, and only levels whose children span multiple earlier
+levels materialize a concatenated buffer for one padded gather.
 """
 from collections import defaultdict
 
@@ -33,7 +35,7 @@ from aan.data_structures.batch_neurotree import BatchNeuroTree
 class CompiledBatch(object):
     """Height-bucketed view of a batch of neurotrees (pure Python, no tensors)."""
 
-    __slots__ = ('levels', 'root_positions', 'node_count')
+    __slots__ = ('levels', 'root_positions', 'node_count', 'roots_are_last_level')
 
     def __init__(self, roots):
         height = {}
@@ -65,6 +67,7 @@ class CompiledBatch(object):
         self.levels = []
         for h in sorted(buckets):
             nodes = buckets[h]
+            level_start = next_pos
             child_index = []
             max_children = 0
             for node in nodes:
@@ -73,19 +76,37 @@ class CompiledBatch(object):
                 max_children = max(max_children, len(idxs))
             # pre-pad in Python so the engine uploads ONE index tensor per level
             padded_index = [idxs + [0] * (max_children - len(idxs)) for idxs in child_index]
+            # chain pattern: every node's single child is the previous level's
+            # node at the same row — the gather (and the growing global buffer)
+            # can be skipped entirely
+            prev_start = self.levels[-1]['start'] if self.levels else None
+            prev_len = len(self.levels[-1]['nodes']) if self.levels else None
+            prev_contiguous = (
+                max_children == 1
+                and prev_len == len(nodes)
+                and all(idxs == [prev_start + i] for i, idxs in enumerate(padded_index))
+            )
             for node in nodes:
                 position[id(node)] = next_pos
                 next_pos += 1
             self.levels.append({
                 'nodes': nodes,
+                'start': level_start,
                 'batch_tree': BatchNeuroTree(nodes),
                 'padded_index': padded_index,
                 'max_children': max_children,
+                'prev_contiguous': prev_contiguous,
                 'child_counts': [len(node.C) for node in nodes],
                 'A_c': [node.A_c for node in nodes],
             })
         self.root_positions = [position[id(root)] for root in roots]
         self.node_count = next_pos
+        # roots == the last level in batch order (uniform-depth batches)
+        last = self.levels[-1]
+        self.roots_are_last_level = (
+            len(roots) == len(last['nodes'])
+            and self.root_positions == list(range(last['start'], last['start'] + len(roots)))
+        )
 
 
 class FlatRecursiveAssociationNeuralNetworks(nn.Module):
@@ -117,8 +138,9 @@ class FlatRecursiveAssociationNeuralNetworks(nn.Module):
         compiled = CompiledBatch(batch_tree.nodes)
         device = self.zero_hiddens.device
 
-        # row 0 is the zero padding row; levels append their outputs
-        all_hidden = self.zero_hiddens.unsqueeze(0)
+        # per-level outputs; the global (node_count, H) buffer is only
+        # materialized for levels whose children span multiple levels
+        level_outputs = []
 
         for level in compiled.levels:
             n = len(level['nodes'])
@@ -127,9 +149,14 @@ class FlatRecursiveAssociationNeuralNetworks(nn.Module):
             if level['max_children'] == 0:  # a level of pure leaves
                 hiddens = self.zero_hiddens.repeat(n, 1, 1)
             else:
-                # one padded gather instead of per-node stacks
-                idx = torch.tensor(level['padded_index'], dtype=torch.long, device=device)
-                child_hiddens = all_hidden[idx]  # (n, maxC, H)
+                if level['prev_contiguous']:
+                    # chain pattern: children ARE the previous level, in order
+                    child_hiddens = level_outputs[-1].unsqueeze(1)
+                else:
+                    # one padded gather from the concatenated earlier levels
+                    buffer = torch.cat([self.zero_hiddens.unsqueeze(0)] + level_outputs, dim=0)
+                    idx = torch.tensor(level['padded_index'], dtype=torch.long, device=device)
+                    child_hiddens = buffer[idx]  # (n, maxC, H)
 
                 hiddens = self.gnn(level['A_c'], child_hiddens)
                 hiddens, indices = self.readout(hiddens, level['child_counts'])
@@ -140,10 +167,13 @@ class FlatRecursiveAssociationNeuralNetworks(nn.Module):
             if node_level:
                 self.task_networks(hiddens, level['batch_tree'])
 
-            all_hidden = torch.cat([all_hidden, hiddens.squeeze(1)], dim=0)
+            level_outputs.append(hiddens.squeeze(1))
 
+        if compiled.roots_are_last_level:
+            return level_outputs[-1]
+        buffer = torch.cat([self.zero_hiddens.unsqueeze(0)] + level_outputs, dim=0)
         root_idx = torch.as_tensor(compiled.root_positions, dtype=torch.long, device=device)
-        return all_hidden[root_idx]
+        return buffer[root_idx]
 
     def forward(self, batch_tree: BatchNeuroTree, node_level=False):
         return self.propagation(batch_tree, node_level)
