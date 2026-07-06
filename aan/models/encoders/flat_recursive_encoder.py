@@ -71,13 +71,15 @@ class CompiledBatch(object):
                 idxs = [position[id(c)] for c in node.C]
                 child_index.append(idxs)
                 max_children = max(max_children, len(idxs))
+            # pre-pad in Python so the engine uploads ONE index tensor per level
+            padded_index = [idxs + [0] * (max_children - len(idxs)) for idxs in child_index]
             for node in nodes:
                 position[id(node)] = next_pos
                 next_pos += 1
             self.levels.append({
                 'nodes': nodes,
                 'batch_tree': BatchNeuroTree(nodes),
-                'child_index': child_index,
+                'padded_index': padded_index,
                 'max_children': max_children,
                 'child_counts': [len(node.C) for node in nodes],
                 'A_c': [node.A_c for node in nodes],
@@ -126,11 +128,7 @@ class FlatRecursiveAssociationNeuralNetworks(nn.Module):
                 hiddens = self.zero_hiddens.repeat(n, 1, 1)
             else:
                 # one padded gather instead of per-node stacks
-                idx = torch.zeros(n, level['max_children'], dtype=torch.long, device=device)
-                for i, child_idxs in enumerate(level['child_index']):
-                    if child_idxs:
-                        idx[i, :len(child_idxs)] = torch.as_tensor(
-                            child_idxs, dtype=torch.long, device=device)
+                idx = torch.tensor(level['padded_index'], dtype=torch.long, device=device)
                 child_hiddens = all_hidden[idx]  # (n, maxC, H)
 
                 hiddens = self.gnn(level['A_c'], child_hiddens)
