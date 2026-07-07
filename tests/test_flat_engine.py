@@ -77,7 +77,7 @@ def run_engine(engine, trees):
 
 
 def test_outputs_match():
-    for version in ('ran', 'raan', 'gau', 'gaau', 'tau'):
+    for version in ('ran', 'raan', 'gau', 'gaau', 'tau', 'ptau', 'gtau'):
         recursive, flat = make_engines(version)
         trees = make_mixed_trees()
         out_r = run_engine(recursive, trees)
@@ -87,7 +87,7 @@ def test_outputs_match():
 
 
 def test_gradients_match():
-    for version in ('gaau', 'tau'):
+    for version in ('gaau', 'tau', 'ptau', 'gtau'):
         recursive, flat = make_engines(version)
         trees = make_mixed_trees()
 

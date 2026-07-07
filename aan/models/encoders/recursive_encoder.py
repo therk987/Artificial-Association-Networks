@@ -13,7 +13,9 @@ from aan.models.encoders.readout_attention import AttentionPoolReadout
 from aan.data_structures.batch_neurotree import BatchNeuroTree
 
 VERSION_ALIASES = {'egaau': 'egau'}
-SUPPORTED_VERSIONS = ('ran', 'raan', 'gau', 'gaau', 'egau', 'tau', 'tau2')
+SUPPORTED_VERSIONS = ('ran', 'raan', 'gau', 'gaau', 'egau', 'tau', 'tau2',
+                      'ptau', 'gtau')
+TAU_VARIANTS = {'tau': 'post', 'tau2': 'post', 'ptau': 'pre', 'gtau': 'gated'}
 
 
 def build_readout(version, hidden_dim):
@@ -30,13 +32,16 @@ def build_cells(version, input_dim_with_bias, hidden_dim):
     ran:  RNN + GCN      raan: RNN + GAT
     gau:  GRU + GCN      gaau: GRU + GAT     egau: GRU + edge-GCN
     tau:  residual-stream combine + masked multi-head attention (transformer)
+    ptau: tau with a pure pre-LN combine (no per-step output norm)
+    gtau: tau with a GTrXL-style carry gate on the combine output
     """
     version = VERSION_ALIASES.get(version, version)
     if version not in SUPPORTED_VERSIONS:
         raise ValueError('unknown version: {} (expected one of {})'.format(version, SUPPORTED_VERSIONS))
 
-    if version in ('tau', 'tau2'):
-        return (TransformerAssociationUnit(input_dim_with_bias, hidden_dim),
+    if version in TAU_VARIANTS:
+        return (TransformerAssociationUnit(input_dim_with_bias, hidden_dim,
+                                           variant=TAU_VARIANTS[version]),
                 TransformerChildAttention(hidden_dim))
 
     if version in ('ran', 'raan'):

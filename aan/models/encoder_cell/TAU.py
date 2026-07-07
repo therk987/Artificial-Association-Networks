@@ -11,6 +11,17 @@ also normalize every step, keeping the family comparable):
     u  = u + FFN(LN(u))     (pre-LN feed-forward sublayer)
     h' = LN(u)
 
+Depth variants (E3 deep-chain regime, depth 81): the per-step output norm
+makes the stack post-LN along depth — the identity path is renormalized at
+every level, the known post-LN failure mode at depth. Two fixes:
+
+    variant='pre'   (ptau) h' = u — pure pre-LN residual stream; the
+                    identity path crosses all levels unnormalized.
+    variant='gated' (gtau) h' = (1-z) h + z LN(u), z = sigmoid(W_z[h, LN(u)]
+                    + b_z), b_z = -2 — GTrXL-style convex gate biased to
+                    carry; preserves h without renormalization the way the
+                    GAU family does.
+
 Aggregation (gnn slot) — ``TransformerChildAttention``: masked multi-head
 self-attention over the children with A~ = A + I as the attention mask plus
 a feed-forward sublayer — the transformer generalization of the GAT
@@ -41,22 +52,35 @@ def _feed_forward(hidden_dim, ff_mult):
 
 class TransformerAssociationUnit(nn.Module):
 
-    def __init__(self, input_dim, hidden_dim, ff_mult=2):
+    def __init__(self, input_dim, hidden_dim, ff_mult=2, variant='post'):
         super().__init__()
+        if variant not in ('post', 'pre', 'gated'):
+            raise ValueError('unknown TAU variant: %r' % (variant,))
         self.input_dim = input_dim
         self.hidden_dim = hidden_dim
+        self.variant = variant
         self.inject = nn.Linear(input_dim, hidden_dim)
         self.ln_ff = nn.LayerNorm(hidden_dim)
         self.ff = _feed_forward(hidden_dim, ff_mult)
         self.ln_out = nn.LayerNorm(hidden_dim)
+        if variant == 'gated':
+            self.gate = nn.Linear(2 * hidden_dim, hidden_dim)
         for param in self.parameters():
             if len(param.shape) > 1:
                 nn.init.xavier_uniform_(param, gain=1.414)
+        if variant == 'gated':
+            nn.init.constant_(self.gate.bias, -2.0)
 
     def forward(self, x, h):
         u = h + self.inject(x)
         u = u + self.ff(self.ln_ff(u))
-        return self.ln_out(u)
+        if self.variant == 'pre':
+            return u
+        out = self.ln_out(u)
+        if self.variant == 'post':
+            return out
+        z = torch.sigmoid(self.gate(torch.cat([h, out], dim=-1)))
+        return (1 - z) * h + z * out
 
 
 class TransformerChildAttention(nn.Module):

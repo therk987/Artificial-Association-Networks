@@ -97,7 +97,7 @@ def test_forward_shapes_and_grad():
 
 
 def test_all_versions_forward():
-    for version in ('ran', 'raan', 'gau', 'gaau', 'egaau', 'tau'):
+    for version in ('ran', 'raan', 'gau', 'gaau', 'egaau', 'tau', 'ptau', 'gtau'):
         model, _ = make_model(version)
         batch = BatchNeuroTree([make_chain_tree() for _ in range(2)])
         outputs, h_root, _ = model(batch, ['classification'] * 2)
