@@ -231,11 +231,54 @@ def imdb_parts(limit=None):
     }
 
 
+def prebuilt2neurotree(tree, mt):
+    tree.reset_state()
+    return tree
+
+
+def algorithms_parts(limit=None, ablate='none'):
+    """Sorting-algorithm CFG neurotrees (paper Exp. 4) — the multi-parent,
+    level-jumping dataset. E6 degrades exactly those axes via --ablate
+    (none / single-parent / no-level-jump / both)."""
+    from aan.datas.code.load import SORT_AST_NEUROTREE_CONTROL_FLOW_GRAPH_DATA
+    from aan.models.feature_encoders.domains.code2vec import (Ast2VectorForPython,
+                                                              Constant2Vec)
+    from aan.data_structures.ablation import ABLATIONS, count_nodes
+
+    data = SORT_AST_NEUROTREE_CONTROL_FLOW_GRAPH_DATA()
+    transform = ABLATIONS[ablate]
+    splits = {}
+    grown = []
+    for split in ('train', 'valid', 'test'):
+        pairs, ys = data[split]['x'], data[split]['y']
+        if limit:
+            pairs, ys = pairs[:limit], ys[:limit]
+        trees = []
+        for _ast_tree, cfg_tree in pairs:
+            new_tree = transform(cfg_tree)
+            grown.append(count_nodes(new_tree))
+            trees.append(new_tree)
+        splits[split] = (trees, torch.tensor(ys, dtype=torch.long))
+    print('algorithms ablate={} mean nodes/tree {:.1f}'.format(
+        ablate, sum(grown) / max(len(grown), 1)), flush=True)
+
+    return {
+        'domain': 'code',
+        'splits': splits,
+        'builder': prebuilt2neurotree,
+        'encoders': {'class': Ast2VectorForPython(input_dim=25, output_dim=128),
+                     'Num': Constant2Vec(128)},
+        'encoder': None,
+        'classes': 6,
+    }
+
+
 PARTS = {
     'mnist': mnist_parts,
     'speechcommands': speechcommands_parts,
     'speechcommands_mfcc': speechcommands_mfcc_parts,
     'imdb': imdb_parts,
+    'algorithms': algorithms_parts,
 }
 
 # backward-compatible alias (bench scripts referenced DATASETS)
@@ -267,7 +310,10 @@ def build_from_parts(parts_list):
         maintask_map = {p['domain']: 'classification' for p in parts_list}
         datasets[split] = NeuroDataset(x_map, y_map, maintask_map, builders)
 
-    encoders = {p['domain']: p['encoder'] for p in parts_list}
+    encoders = {}
+    for p in parts_list:
+        # a part may span several feature domains (e.g. code: class + Num)
+        encoders.update(p.get('encoders') or {p['domain']: p['encoder']})
     return datasets['train'], datasets['valid'], datasets['test'], encoders, total_classes
 
 
@@ -295,9 +341,10 @@ def _subsample_train(part, fraction, seed):
     return part
 
 
-def build_dataset(name, limit=None, subsample_seed=0):
+def build_dataset(name, limit=None, subsample_seed=0, ablate='none'):
     """``name`` is a comma list of domain specs; ``domain@0.1`` keeps a
-    deterministic 10% of that domain's training data (E4 low-resource)."""
+    deterministic 10% of that domain's training data (E4 low-resource).
+    ``ablate`` applies the E6 structural degradation (algorithms only)."""
     parts_list = []
     for spec in (n.strip() for n in name.split(',') if n.strip()):
         fraction = None
@@ -307,7 +354,10 @@ def build_dataset(name, limit=None, subsample_seed=0):
         if spec not in PARTS:
             raise ValueError('unknown dataset {} (available: {})'.format(
                 spec, sorted(PARTS)))
-        part = PARTS[spec](limit)
+        if spec == 'algorithms':
+            part = PARTS[spec](limit, ablate=ablate)
+        else:
+            part = PARTS[spec](limit)
         if fraction is not None:
             part = _subsample_train(part, fraction, subsample_seed)
         parts_list.append(part)
@@ -338,7 +388,8 @@ def evaluate(model, loader, device):
 def run_one_seed(args, seed, device):
     set_seed(seed)
     train_ds, valid_ds, test_ds, feature_encoders, class_count = \
-        build_dataset(args.dataset, limit=args.limit, subsample_seed=seed)
+        build_dataset(args.dataset, limit=args.limit, subsample_seed=seed,
+                      ablate=args.ablate)
 
     # NOTE: persistent_workers deadlocked with 3 loaders x 8 workers on
     # torch 2.1 nightly (main thread stuck in poll at epoch boundaries) —
@@ -400,6 +451,9 @@ def main():
     parser.add_argument('--hidden-dim', type=int, default=128)
     parser.add_argument('--limit', type=int, default=None,
                         help='subsample each domain for a quick smoke run')
+    parser.add_argument('--ablate', default='none',
+                        choices=['none', 'single-parent', 'no-level-jump', 'both'],
+                        help='E6 structural ablation (algorithms dataset)')
     parser.add_argument('--device', default=default_device)
     parser.add_argument('--out', default=None, help='CSV path for per-seed results')
     args = parser.parse_args()
