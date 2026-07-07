@@ -38,14 +38,18 @@ class ArtificialAssociationNeuralNetworks(nn.Module):
         # The DFD (decoder) pass reads per-node state written by the
         # recursive engine, so decoder-equipped models use it; otherwise the
         # flat engine executes the same model with level-batched kernels.
-        if engine == 'flat' and len(feature_decoders) > 0:
+        # 'mask' runs the tau cell on compiler-built attention masks (S0).
+        if engine in ('flat', 'mask') and len(feature_decoders) > 0:
             engine = 'recursive'
         if engine == 'flat':
             encoder_cls = FlatRecursiveAssociationNeuralNetworks
+        elif engine == 'mask':
+            from aan.models.encoders.mask_engine import MaskedDFCEngine
+            encoder_cls = MaskedDFCEngine
         elif engine == 'recursive':
             encoder_cls = RecursiveAssociationNeuralNetworks
         else:
-            raise ValueError("unknown engine: {} (expected 'flat' or 'recursive')".format(engine))
+            raise ValueError("unknown engine: {} (expected 'flat', 'mask' or 'recursive')".format(engine))
         self.engine = engine
 
         self.ran = encoder_cls(

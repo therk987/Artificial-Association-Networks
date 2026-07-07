@@ -306,7 +306,7 @@ def main():
     parser.add_argument('--dataset', default='mnist',
                         help='domain name or comma-combined list ({})'.format(sorted(PARTS)))
     parser.add_argument('--version', default='gaau')
-    parser.add_argument('--engine', default='flat', choices=['flat', 'recursive'])
+    parser.add_argument('--engine', default='flat', choices=['flat', 'mask', 'recursive'])
     parser.add_argument('--num-workers', type=int, default=0,
                         help='dataloader workers (tree building / audio decoding)')
     parser.add_argument('--seeds', type=int, nargs='+', default=[1234, 42, 7, 2024, 31337])
