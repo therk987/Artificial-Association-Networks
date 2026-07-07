@@ -162,6 +162,54 @@ def speechcommands_parts(limit=None):
     }
 
 
+def mfcc2neurotree(data, mt):
+    """(40, T) MFCC frames -> depth-T chain, leaf = first frame (paper, Exp. 3)."""
+    node = NeuroNode(data[:, 0], 'mfcc')
+    for t in range(1, data.shape[1]):
+        node = NeuroNode(data[:, t], 'mfcc', C=[node])
+    return node
+
+
+def speechcommands_mfcc_parts(limit=None):
+    """Deep-neurotree SC (paper, Exp. 3): 40-dim MFCC frames as a depth-81
+    chain with one FC feature layer — the regime where non-gated cells fail
+    to propagate errors. MFCCs are computed once from the waveform cache."""
+    sc = speechcommands_parts(limit=None)
+
+    data_root = _data_root('sound')
+    cache_path = os.path.join(data_root, 'sc_mfcc_fp16.pt')
+    if not os.path.exists(cache_path):
+        import torchaudio
+        mfcc = torchaudio.transforms.MFCC(sample_rate=16000, n_mfcc=40)
+        blob = {}
+        for split in ('train', 'valid', 'test'):
+            xs, ys = sc['splits'][split]
+            out = torch.zeros(len(xs), 40, 81, dtype=torch.float16)
+            print('MFCC {} ({} clips)...'.format(split, len(xs)), flush=True)
+            step = 512
+            for i in range(0, len(xs), step):
+                out[i:i + step] = mfcc(xs[i:i + step, 0, :].to(torch.float32)).to(torch.float16)
+            blob[split] = out
+        torch.save(blob, cache_path)
+        print('saved', cache_path, flush=True)
+    blob = torch.load(cache_path)
+
+    from aan.models.feature_encoders.domains.sound2vec import FullyConnectedLayer_MFCC
+    splits = {}
+    for split in ('train', 'valid', 'test'):
+        xs, ys = sc['splits'][split]
+        n = min(len(xs), limit) if limit else len(xs)
+        splits[split] = (blob[split][:n], ys[:n])
+
+    return {
+        'domain': 'mfcc',
+        'splits': splits,
+        'builder': mfcc2neurotree,
+        'encoder': FullyConnectedLayer_MFCC(input_dim=40, output_dim=128),
+        'classes': sc['classes'],
+    }
+
+
 def imdb_parts(limit=None):
     from aan.datas.text.load import IMDB_DATA
     from aan.models.feature_encoders.domains.text2vec import TextCNNEncoder
@@ -186,6 +234,7 @@ def imdb_parts(limit=None):
 PARTS = {
     'mnist': mnist_parts,
     'speechcommands': speechcommands_parts,
+    'speechcommands_mfcc': speechcommands_mfcc_parts,
     'imdb': imdb_parts,
 }
 
