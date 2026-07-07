@@ -260,8 +260,10 @@ def run_one_seed(args, seed, device):
     train_ds, valid_ds, test_ds, feature_encoders, class_count = \
         build_dataset(args.dataset, limit=args.limit)
 
-    workers = dict(num_workers=args.num_workers,
-                   persistent_workers=args.num_workers > 0)
+    # NOTE: persistent_workers deadlocked with 3 loaders x 8 workers on
+    # torch 2.1 nightly (main thread stuck in poll at epoch boundaries) —
+    # workers are recreated per epoch instead, which costs ~1-2s/epoch.
+    workers = dict(num_workers=args.num_workers)
     train_loader = createNeuroDataloader(train_ds, batch_size=args.batch_size, shuffle=True, **workers)
     valid_loader = createNeuroDataloader(valid_ds, batch_size=args.batch_size, **workers)
     test_loader = createNeuroDataloader(test_ds, batch_size=args.batch_size, **workers)
