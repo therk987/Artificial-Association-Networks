@@ -71,21 +71,9 @@ def mnist_image2neurotree(data, mt):
     return NeuroNode(None, None, C=[mid])
 
 
-class SoundTreeBuilder(object):
-    """Picklable lazy audio -> neurotree builder (dataloader-worker safe)."""
-
-    def __init__(self, dataset):
-        self.dataset = dataset
-
-    def __call__(self, idx, mt):
-        waveform, sample_rate, label, _, _ = self.dataset[idx]
-        wav = waveform[:1, :]
-        if wav.shape[1] < 16000:  # pad/trim to 1 second at 16 kHz
-            wav = F.pad(wav, (0, 16000 - wav.shape[1]))
-        else:
-            wav = wav[:, :16000]
-        leaf = NeuroNode(wav, 'sound')
-        return NeuroNode(None, None, C=[leaf])
+def sound2neurotree(data, mt):
+    leaf = NeuroNode(data, 'sound')
+    return NeuroNode(None, None, C=[leaf])
 
 
 def text2neurotree(data, mt):
@@ -125,41 +113,50 @@ def mnist_parts(limit=None):
 
 
 def speechcommands_parts(limit=None):
-    """Speech Commands v0.02, 35 classes, raw 16 kHz waveforms + M5 (paper, Exp. 1)."""
-    import torchaudio
+    """Speech Commands v0.02, 35 classes, raw 16 kHz waveforms + M5 (paper, Exp. 1).
+
+    All waveforms are decoded ONCE into an fp16 tensor cache (~3.4GB) so
+    training streams from memory like MNIST; per-epoch audio decoding made
+    the GPU sit mostly idle otherwise.
+    """
     from aan.models.feature_encoders.domains.sound2vec import M5_GroupNorm
 
     data_root = _data_root('sound')
     os.makedirs(data_root, exist_ok=True)
+    cache_path = os.path.join(data_root, 'sc_waveforms_fp16.pt')
 
-    subsets = {}
-    for name in ('training', 'validation', 'testing'):
-        subsets[name] = torchaudio.datasets.SPEECHCOMMANDS(
-            data_root, download=True, subset=name)
+    if not os.path.exists(cache_path):
+        import torchaudio
+        blob = {}
+        for name in ('training', 'validation', 'testing'):
+            ds = torchaudio.datasets.SPEECHCOMMANDS(data_root, download=True, subset=name)
+            xs = torch.zeros(len(ds), 1, 16000, dtype=torch.float16)
+            labels = []
+            print('decoding SC {} ({} files)...'.format(name, len(ds)), flush=True)
+            for i in range(len(ds)):
+                wav, sr, label, _, _ = ds[i]
+                w = wav[:1, :16000]
+                xs[i, :, :w.shape[1]] = w.to(torch.float16)
+                labels.append(label)
+            blob[name] = (xs, labels)
+        torch.save(blob, cache_path)
+        print('saved', cache_path, flush=True)
+    blob = torch.load(cache_path)
 
-    def label_of(dataset, idx):
-        # _walker holds file paths; the label is the parent directory name
-        path = dataset._walker[idx]
-        return os.path.basename(os.path.dirname(path))
-
-    label_names = sorted({label_of(subsets['training'], i)
-                          for i in range(len(subsets['training']))})
+    label_names = sorted(set(blob['training'][1]))
     label_index = {name: i for i, name in enumerate(label_names)}
 
-    split_names = (('train', 'training'), ('valid', 'validation'), ('test', 'testing'))
     splits = {}
-    for split, name in split_names:
-        ds = subsets[name]
-        n = min(len(ds), limit) if limit else len(ds)
-        indices = list(range(n))
-        ys = [torch.tensor(label_index[label_of(ds, i)]) for i in indices]
-        splits[split] = (indices, ys)
+    for split, name in (('train', 'training'), ('valid', 'validation'), ('test', 'testing')):
+        xs, labels = blob[name]
+        n = min(len(xs), limit) if limit else len(xs)
+        ys = torch.tensor([label_index[l] for l in labels[:n]], dtype=torch.long)
+        splits[split] = (xs[:n], ys)
 
     return {
         'domain': 'sound',
         'splits': splits,
-        'builder_per_split': {split: SoundTreeBuilder(subsets[name])
-                              for split, name in split_names},
+        'builder': sound2neurotree,
         'encoder': M5_GroupNorm(output_size=128),
         'classes': len(label_names),
     }
