@@ -71,6 +71,51 @@ def test_masked_attention_respects_adjacency_and_padding():
             assert torch.isfinite(p.grad).all()
 
 
+def test_real_rows_independent_of_padding():
+    """A node's real children must get the same result no matter how much
+    padding the engine's grouping added (recursive vs flat group widths)."""
+    torch.manual_seed(0)
+    gnn = TransformerChildAttention(HIDDEN_DIM).eval()
+    A = torch.tensor([[0., 1.], [1., 0.]])
+    children = torch.randn(1, 2, HIDDEN_DIM)
+
+    with torch.no_grad():
+        narrow = gnn([A], children)
+        wide = gnn([A], torch.cat([children, torch.zeros(1, 3, HIDDEN_DIM)], dim=1))
+
+    assert torch.allclose(narrow[0, :2], wide[0, :2], atol=1e-6)
+
+
+def test_none_rows_pass_through_in_mixed_batch():
+    """Per-node None semantics inside a mixed group: the None node's children
+    are returned exactly as-is while connected nodes ARE mixed (both engines
+    rely on this for their output equivalence)."""
+    torch.manual_seed(0)
+    gnn = TransformerChildAttention(HIDDEN_DIM).eval()
+    A = torch.tensor([[0., 1.], [1., 0.]])
+    children = torch.randn(2, 2, HIDDEN_DIM)
+
+    with torch.no_grad():
+        out = gnn([A, None], children)
+    assert torch.equal(out[1], children[1])
+    assert not torch.allclose(out[0], children[0])
+
+
+def test_explicit_identity_differs_from_none():
+    """Documented caveat: unlike GCN/GAT, an explicit A=I is NOT equivalent
+    to None for TAU (value/FF transforms still apply)."""
+    torch.manual_seed(0)
+    gnn = TransformerChildAttention(HIDDEN_DIM).eval()
+    children = torch.randn(1, 2, HIDDEN_DIM)
+
+    with torch.no_grad():
+        out_none = gnn([None], children)
+        out_eye = gnn([torch.eye(2)], children)
+
+    assert torch.equal(out_none, children)
+    assert not torch.allclose(out_eye, children)
+
+
 def test_deep_chain_stability():
     """81-level chain (E3 regime): forward and gradients stay finite."""
     torch.manual_seed(0)
