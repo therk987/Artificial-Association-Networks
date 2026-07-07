@@ -40,6 +40,11 @@ class DeconvolutionalRecursiveAssociationNetworks(nn.Module):
         elif version == 'gaau':
             rdn = GatedRecurrentUnit(self.input_dim_with_bias, hidden_dim)
             gnn = GraphAttentionLayer(hidden_dim).to(device)
+        elif version == 'tau':
+            from aan.models.encoder_cell.TAU import (TransformerAssociationUnit,
+                                                     TransformerChildAttention)
+            rdn = TransformerAssociationUnit(self.input_dim_with_bias, hidden_dim)
+            gnn = TransformerChildAttention(hidden_dim).to(device)
         else:
             assert False  ## ERROR!
 
