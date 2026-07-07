@@ -9,10 +9,19 @@ from aan.models.encoder_cell.GRU import GatedRecurrentUnit
 from aan.models.encoder_cell.TAU import (TransformerAssociationUnit,
                                          TransformerChildAttention)
 from aan.models.encoders.readout_max import MaxpoolReadoutLayer
+from aan.models.encoders.readout_attention import AttentionPoolReadout
 from aan.data_structures.batch_neurotree import BatchNeuroTree
 
 VERSION_ALIASES = {'egaau': 'egau'}
-SUPPORTED_VERSIONS = ('ran', 'raan', 'gau', 'gaau', 'egau', 'tau')
+SUPPORTED_VERSIONS = ('ran', 'raan', 'gau', 'gaau', 'egau', 'tau', 'tau2')
+
+
+def build_readout(version, hidden_dim):
+    """tau2 = the tau cells with attention-pool readout instead of maxpool
+    (selective readout; removes the elementwise-max retrieval bottleneck)."""
+    if VERSION_ALIASES.get(version, version) == 'tau2':
+        return AttentionPoolReadout(hidden_dim)
+    return MaxpoolReadoutLayer()
 
 
 def build_cells(version, input_dim_with_bias, hidden_dim):
@@ -26,7 +35,7 @@ def build_cells(version, input_dim_with_bias, hidden_dim):
     if version not in SUPPORTED_VERSIONS:
         raise ValueError('unknown version: {} (expected one of {})'.format(version, SUPPORTED_VERSIONS))
 
-    if version == 'tau':
+    if version in ('tau', 'tau2'):
         return (TransformerAssociationUnit(input_dim_with_bias, hidden_dim),
                 TransformerChildAttention(hidden_dim))
 
@@ -73,7 +82,7 @@ class RecursiveAssociationNeuralNetworks(nn.Module):
         self.register_buffer('zero_hiddens', torch.zeros(self.hidden_dim))
 
         self.rnn, self.gnn = build_cells(version, self.input_dim_with_bias, hidden_dim)
-        self.readout = MaxpoolReadoutLayer()
+        self.readout = build_readout(version, hidden_dim)
 
         # Root dx/dh accumulation is only needed by the DFD (decoder) pass;
         # the AAN wrapper enables it when restoration networks are configured.
@@ -101,7 +110,8 @@ class RecursiveAssociationNeuralNetworks(nn.Module):
             A_c = batch_tree.getChildAdjacencyMatrix()
             hiddens = self.gnn(A_c, child_hiddens)
             hiddens, indices = self.readout(hiddens, batch_tree.getChildCount())
-            batch_tree.setIndices(indices)
+            if indices is not None:
+                batch_tree.setIndices(indices)
 
         hiddens = self.rnn(node_features, hiddens)
 

@@ -66,9 +66,9 @@ class MaskedDFCEngine(FlatRecursiveAssociationNeuralNetworks):
 
     def __init__(self, input_dim, hidden_dim, feature_extraction_networks,
                  task_networks, version='tau'):
-        if version != 'tau':
-            raise ValueError("engine='mask' supports version='tau' only "
-                             '(the attention cell); got %r' % version)
+        if version not in ('tau', 'tau2'):
+            raise ValueError("engine='mask' supports the tau family only; "
+                             'got %r' % version)
         super().__init__(input_dim, hidden_dim, feature_extraction_networks,
                          task_networks, version=version)
 
@@ -108,7 +108,8 @@ class MaskedDFCEngine(FlatRecursiveAssociationNeuralNetworks):
 
                 hiddens = self.masked_aggregate(level, child_hiddens)
                 hiddens, indices = self.readout(hiddens, level['child_counts'])
-                level['batch_tree'].setIndices(indices)
+                if indices is not None:
+                    level['batch_tree'].setIndices(indices)
 
             hiddens = self.rnn(node_features, hiddens)
             if node_level:

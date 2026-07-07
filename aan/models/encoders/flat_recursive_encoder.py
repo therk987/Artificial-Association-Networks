@@ -27,8 +27,7 @@ from collections import defaultdict
 import torch
 import torch.nn as nn
 
-from aan.models.encoders.recursive_encoder import build_cells
-from aan.models.encoders.readout_max import MaxpoolReadoutLayer
+from aan.models.encoders.recursive_encoder import build_cells, build_readout
 from aan.data_structures.batch_neurotree import BatchNeuroTree
 
 
@@ -132,7 +131,7 @@ class FlatRecursiveAssociationNeuralNetworks(nn.Module):
         self.register_buffer('zero_hiddens', torch.zeros(self.hidden_dim))
 
         self.rnn, self.gnn = build_cells(version, self.input_dim_with_bias, hidden_dim)
-        self.readout = MaxpoolReadoutLayer()
+        self.readout = build_readout(version, hidden_dim)
 
     def propagation(self, batch_tree: BatchNeuroTree, node_level=False):
         compiled = CompiledBatch(batch_tree.nodes)
@@ -160,7 +159,8 @@ class FlatRecursiveAssociationNeuralNetworks(nn.Module):
 
                 hiddens = self.gnn(level['A_c'], child_hiddens)
                 hiddens, indices = self.readout(hiddens, level['child_counts'])
-                level['batch_tree'].setIndices(indices)
+                if indices is not None:
+                    level['batch_tree'].setIndices(indices)
 
             hiddens = self.rnn(node_features, hiddens)
 
