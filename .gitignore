@@ -131,6 +131,8 @@ dmypy.json
 # macOS
 .DS_Store
 
+# local planning docs (do not publish)
+docs/sessions/
 
 # datasets downloaded at runtime
 aan/datas/image/MNIST/
@@ -140,3 +142,4 @@ aan/datas/text/aclImdb/
 aan/datas/text/aclImdb_v1.tar.gz
 aan/datas/text/imdb_cache*.pkl
 aan/datas/sound/SpeechCommands/
+MAN_PLAN.md
