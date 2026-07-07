@@ -87,9 +87,11 @@ def _two_chains():
 
 def test_ancestor_mask_semantics():
     tree_a, tree_b, a_leaf, _ = _two_chains()
-    nodes, allowed, level_ids, roots_pos = compile_ancestor_masks([tree_a, tree_b])
+    nodes, allowed, level_ids, roots_pos, tree_ids = compile_ancestor_masks([tree_a, tree_b])
     pos = {id(n): i for i, n in enumerate(nodes)}
     ra, rb = roots_pos
+    assert tree_ids[ra] != tree_ids[rb]
+    assert tree_ids[pos[id(a_leaf)]] == tree_ids[ra]
     assert allowed[ra, pos[id(a_leaf)]]           # root sees its leaf
     assert not allowed[pos[id(a_leaf)], ra]       # leaf does not see its root
     # no cross-tree edges
@@ -139,6 +141,23 @@ def test_ancestor_transformer_weight_shared_and_flat_arm():
         t.reset_state()
     out2 = flat_arm(BatchNeuroTree(trees))
     assert out2.shape == (len(trees), HIDDEN_DIM) and torch.isfinite(out2).all()
+
+
+def test_flat_arm_no_cross_sample_leakage():
+    """The flat control arm must still isolate samples: packing another
+    tree into the batch may not change a tree's root embedding."""
+    torch.manual_seed(0)
+    fe = MultiExtractionConnector(FEATURE_DIM, {'toy': ToyEncoder()})
+    model = AncestorMaskTransformer(FEATURE_DIM, HIDDEN_DIM, fe,
+                                    n_layers=2, structured=False)
+    tree_a, tree_b, _, _ = _two_chains()
+    for t in (tree_a, tree_b):
+        t.reset_state()
+    out_pair = model(BatchNeuroTree([tree_a, tree_b]))
+    for t in (tree_a, tree_b):
+        t.reset_state()
+    out_solo = model(BatchNeuroTree([tree_a]))
+    assert torch.allclose(out_pair[0], out_solo[0], atol=1e-6)
 
 
 def _run_all():

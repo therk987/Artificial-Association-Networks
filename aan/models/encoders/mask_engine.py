@@ -128,7 +128,10 @@ def compile_ancestor_masks(roots):
 
     Returns (nodes in topological order, allowed bool (N, N) where
     allowed[i][j] = j is a descendant of i or j == i, level ids (N,),
-    root positions). No cross-tree edges: batching by packing.
+    root positions, tree ids (N,)). No cross-tree edges: batching by
+    packing. A node reachable from several roots is assigned the last
+    root that reaches it (the datasets here do not share nodes across
+    samples).
     """
     compiled = CompiledBatch(roots)
     nodes, level_ids, position = [], [], {}
@@ -147,7 +150,18 @@ def compile_ancestor_masks(roots):
             allowed[i] |= allowed[j]
     # CompiledBatch reserves position 0 for its padding row; recompute roots
     roots_pos = [position[id(root)] for root in roots]
-    return nodes, allowed, torch.tensor(level_ids, dtype=torch.long), roots_pos
+
+    tree_ids = torch.zeros(n, dtype=torch.long)
+    for t, root in enumerate(roots):
+        stack, seen = [root], set()
+        while stack:
+            node = stack.pop()
+            if id(node) in seen:
+                continue
+            seen.add(id(node))
+            tree_ids[position[id(node)]] = t
+            stack.extend(node.C)
+    return nodes, allowed, torch.tensor(level_ids, dtype=torch.long), roots_pos, tree_ids
 
 
 class AncestorMaskTransformer(nn.Module):
@@ -155,8 +169,9 @@ class AncestorMaskTransformer(nn.Module):
 
     ``weight_shared=True`` applies ONE block ``n_layers`` times (the
     Universal-Transformer variant: compute scales with data depth);
-    ``False`` uses a standard stack. Removing the mask (``structured=False``)
-    yields the flat-transformer control arm with identical code.
+    ``False`` uses a standard stack. ``structured=False`` replaces the
+    ancestor mask with a same-tree block mask — a per-sample flat
+    transformer with identical code (packing isolation preserved).
     """
 
     def __init__(self, input_dim, hidden_dim, feature_extraction_networks,
@@ -187,14 +202,21 @@ class AncestorMaskTransformer(nn.Module):
         self.ln_out = nn.LayerNorm(hidden_dim)
 
     def forward(self, batch_tree: BatchNeuroTree):
-        nodes, allowed, level_ids, roots_pos = compile_ancestor_masks(batch_tree.nodes)
+        nodes, allowed, level_ids, roots_pos, tree_ids = compile_ancestor_masks(batch_tree.nodes)
         device = self.proj.weight.device
         features = self.feature_extraction_networks(BatchNeuroTree(nodes)).squeeze(1)
         x = self.proj(features.to(device))
         x = x + self.level_embedding(level_ids.clamp(max=self.max_levels - 1).to(device))
         x = x.unsqueeze(0)  # one packed sequence
 
-        blocked = (~allowed).to(device) if self.structured else None
+        if self.structured:
+            blocked = (~allowed).to(device)
+        else:
+            # flat control: full attention WITHIN each sample's tree, none
+            # across trees — packing must not leak other samples into the
+            # prediction (predictions would depend on batch composition).
+            same_tree = tree_ids.unsqueeze(0) == tree_ids.unsqueeze(1)
+            blocked = (~same_tree).to(device)
         for step in range(self.n_layers):
             blk = self.blocks[0 if self.weight_shared else step]
             q = blk['ln1'](x)
