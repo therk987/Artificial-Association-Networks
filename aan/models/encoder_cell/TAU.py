@@ -17,6 +17,14 @@ a feed-forward sublayer — the transformer generalization of the GAT
 aggregation. ``None`` adjacency keeps the family semantics (no sibling
 relationships -> no mixing -> identity), which also preserves both engines'
 all-None fast path and their output equivalence.
+
+CAVEAT (semantic difference vs GCN/GAT): for those cells an EXPLICIT
+identity adjacency coincides mathematically with ``None`` (GCN: A=I
+normalizes to I; GAT: a single allowed position softmaxes to weight 1).
+For TAU they differ — an explicit A=I still applies the value/output
+projections and the FF sublayer to each child. Datasets that mean "no
+sibling relationships" must pass ``None`` (the repository loaders do),
+not an identity matrix.
 """
 import numpy as np
 import torch
@@ -88,7 +96,8 @@ class TransformerChildAttention(nn.Module):
         # This must hold PER NODE, not per batch group — the recursive and
         # flat engines group the same nodes differently, so any group-level
         # shortcut would make their outputs diverge.
-        if all(a is None for a in adj):
+        none_flags = [a is None for a in adj]
+        if all(none_flags):
             return Wh
         blocked = self.blocked_mask(adj, Wh.shape[1], Wh.device)
         mask = blocked.repeat_interleave(self.heads, dim=0)
@@ -96,7 +105,7 @@ class TransformerChildAttention(nn.Module):
         attn_out, _ = self.attn(q, q, q, attn_mask=mask, need_weights=False)
         out = Wh + attn_out
         out = out + self.ff(self.ln_ff(out))
-        none_rows = torch.tensor([a is None for a in adj], device=Wh.device)
-        if bool(none_rows.any()):
-            out = torch.where(none_rows.view(-1, 1, 1), Wh, out)
+        if any(none_flags):
+            none_rows = torch.tensor(none_flags, device=Wh.device).view(-1, 1, 1)
+            out = torch.where(none_rows, Wh, out)
         return out

@@ -77,7 +77,7 @@ def run_engine(engine, trees):
 
 
 def test_outputs_match():
-    for version in ('ran', 'raan', 'gau', 'gaau'):
+    for version in ('ran', 'raan', 'gau', 'gaau', 'tau'):
         recursive, flat = make_engines(version)
         trees = make_mixed_trees()
         out_r = run_engine(recursive, trees)
@@ -87,23 +87,25 @@ def test_outputs_match():
 
 
 def test_gradients_match():
-    recursive, flat = make_engines('gaau')
-    trees = make_mixed_trees()
+    for version in ('gaau', 'tau'):
+        recursive, flat = make_engines(version)
+        trees = make_mixed_trees()
 
-    out_r = run_engine(recursive, trees)
-    out_r.sum().backward()
-    grads_r = {n: p.grad.clone() for n, p in recursive.named_parameters() if p.grad is not None}
-    for p in recursive.parameters():
-        p.grad = None
+        out_r = run_engine(recursive, trees)
+        out_r.sum().backward()
+        grads_r = {n: p.grad.clone() for n, p in recursive.named_parameters() if p.grad is not None}
+        for p in recursive.parameters():
+            p.grad = None
 
-    out_f = run_engine(flat, trees)
-    out_f.sum().backward()
-    grads_f = {n: p.grad.clone() for n, p in recursive.named_parameters() if p.grad is not None}
+        out_f = run_engine(flat, trees)
+        out_f.sum().backward()
+        grads_f = {n: p.grad.clone() for n, p in recursive.named_parameters() if p.grad is not None}
 
-    assert set(grads_r) == set(grads_f)
-    for name in grads_r:
-        assert torch.allclose(grads_r[name], grads_f[name], atol=1e-5), \
-            '{}: max diff {}'.format(name, (grads_r[name] - grads_f[name]).abs().max().item())
+        assert set(grads_r) == set(grads_f), version
+        for name in grads_r:
+            assert torch.allclose(grads_r[name], grads_f[name], atol=1e-5), \
+                '{} {}: max diff {}'.format(version, name,
+                                            (grads_r[name] - grads_f[name]).abs().max().item())
 
 
 def test_variable_depth_batch():
