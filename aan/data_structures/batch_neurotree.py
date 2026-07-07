@@ -160,8 +160,20 @@ class BatchNeuroTree(object):
             node.discount += 1
 
     def get_no_calculated(self):
-        """Nodes visited for the first time in this DFC pass (compute once)."""
-        return BatchNeuroTree([node for node in self.nodes if node.count <= 1])
+        """Nodes not yet computed in this DFC pass, deduplicated (compute once).
+
+        ``h is None`` is the computed-flag rather than ``count <= 1``: a node
+        shared by several parents can occur multiple times INSIDE one batch
+        (e.g. memory slots shared across a batch of recall trees), and
+        visit() legitimately counts every occurrence for the DFD parent-edge
+        bookkeeping — so the visit count says nothing about computation."""
+        seen = set()
+        fresh = []
+        for node in self.nodes:
+            if node.h is None and id(node) not in seen:
+                seen.add(id(node))
+                fresh.append(node)
+        return BatchNeuroTree(fresh)
 
     def get_calculated(self):
         return BatchNeuroTree([node for node in self.nodes if node.count == node.discount])
