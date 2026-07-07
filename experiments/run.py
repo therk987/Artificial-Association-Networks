@@ -271,13 +271,17 @@ def build_from_parts(parts_list):
     return datasets['train'], datasets['valid'], datasets['test'], encoders, total_classes
 
 
-def _subsample_train(part, fraction):
+def _subsample_train(part, fraction, seed):
     """Keep a deterministic random fraction of the TRAIN split only
     (valid/test stay full) — the low-resource setting of the positive
-    transfer experiment (E4)."""
+    transfer experiment (E4).
+
+    Seeded with the RUN seed: for a given seed the alone and joint arms see
+    the SAME low-resource subset (paired comparison), while different seeds
+    draw different subsets (data-selection variance is measured too)."""
     xs, ys = part['splits']['train']
     n = max(1, int(len(xs) * fraction))
-    g = torch.Generator().manual_seed(0)
+    g = torch.Generator().manual_seed(seed)
     perm = torch.randperm(len(xs), generator=g)[:n]
     if torch.is_tensor(xs):
         xs = xs[perm]
@@ -291,7 +295,7 @@ def _subsample_train(part, fraction):
     return part
 
 
-def build_dataset(name, limit=None):
+def build_dataset(name, limit=None, subsample_seed=0):
     """``name`` is a comma list of domain specs; ``domain@0.1`` keeps a
     deterministic 10% of that domain's training data (E4 low-resource)."""
     parts_list = []
@@ -305,7 +309,7 @@ def build_dataset(name, limit=None):
                 spec, sorted(PARTS)))
         part = PARTS[spec](limit)
         if fraction is not None:
-            part = _subsample_train(part, fraction)
+            part = _subsample_train(part, fraction, subsample_seed)
         parts_list.append(part)
     return build_from_parts(parts_list)
 
@@ -334,7 +338,7 @@ def evaluate(model, loader, device):
 def run_one_seed(args, seed, device):
     set_seed(seed)
     train_ds, valid_ds, test_ds, feature_encoders, class_count = \
-        build_dataset(args.dataset, limit=args.limit)
+        build_dataset(args.dataset, limit=args.limit, subsample_seed=seed)
 
     # NOTE: persistent_workers deadlocked with 3 loaders x 8 workers on
     # torch 2.1 nightly (main thread stuck in poll at epoch boundaries) —
