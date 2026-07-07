@@ -222,13 +222,43 @@ def build_from_parts(parts_list):
     return datasets['train'], datasets['valid'], datasets['test'], encoders, total_classes
 
 
+def _subsample_train(part, fraction):
+    """Keep a deterministic random fraction of the TRAIN split only
+    (valid/test stay full) — the low-resource setting of the positive
+    transfer experiment (E4)."""
+    xs, ys = part['splits']['train']
+    n = max(1, int(len(xs) * fraction))
+    g = torch.Generator().manual_seed(0)
+    perm = torch.randperm(len(xs), generator=g)[:n]
+    if torch.is_tensor(xs):
+        xs = xs[perm]
+    else:
+        xs = [xs[i] for i in perm.tolist()]
+    if torch.is_tensor(ys):
+        ys = ys[perm]
+    else:
+        ys = [ys[i] for i in perm.tolist()]
+    part['splits']['train'] = (xs, ys)
+    return part
+
+
 def build_dataset(name, limit=None):
-    names = [n.strip() for n in name.split(',') if n.strip()]
-    unknown = [n for n in names if n not in PARTS]
-    if unknown:
-        raise ValueError('unknown dataset(s) {} (available: {})'.format(
-            unknown, sorted(PARTS)))
-    return build_from_parts([PARTS[n](limit) for n in names])
+    """``name`` is a comma list of domain specs; ``domain@0.1`` keeps a
+    deterministic 10% of that domain's training data (E4 low-resource)."""
+    parts_list = []
+    for spec in (n.strip() for n in name.split(',') if n.strip()):
+        fraction = None
+        if '@' in spec:
+            spec, frac_str = spec.split('@', 1)
+            fraction = float(frac_str)
+        if spec not in PARTS:
+            raise ValueError('unknown dataset {} (available: {})'.format(
+                spec, sorted(PARTS)))
+        part = PARTS[spec](limit)
+        if fraction is not None:
+            part = _subsample_train(part, fraction)
+        parts_list.append(part)
+    return build_from_parts(parts_list)
 
 
 # ---------------------------------------------------------------------------
