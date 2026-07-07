@@ -431,6 +431,16 @@ def run_one_seed(args, seed, device):
             seed, epoch, epoch_loss / max(len(train_loader), 1), valid_acc,
             time.perf_counter() - t0), flush=True)
 
+    if args.save_model:
+        os.makedirs(args.save_model, exist_ok=True)
+        torch.save({'model': model.state_dict(),
+                    'cell': {'rnn': model.ran.rnn.state_dict(),
+                             'gnn': model.ran.gnn.state_dict()},
+                    'version': args.version, 'engine': args.engine,
+                    'input_dim': args.input_dim, 'hidden_dim': args.hidden_dim,
+                    'dataset': args.dataset, 'seed': seed},
+                   os.path.join(args.save_model, 'aan_seed%d.pt' % seed))
+
     return {'seed': seed, 'valid_acc': best['valid_acc'], 'test_acc': best['test_acc'],
             'epoch': best['epoch'], 'per_domain': best['per_domain']}
 
@@ -456,6 +466,9 @@ def main():
                         help='E6 structural ablation (algorithms dataset)')
     parser.add_argument('--device', default=default_device)
     parser.add_argument('--out', default=None, help='CSV path for per-seed results')
+    parser.add_argument('--save-model', default=None,
+                        help='directory for per-seed checkpoints (cell weights '
+                             'are stored separately for cross-task transplant)')
     args = parser.parse_args()
 
     print('dataset={} version={} engine={} device={} seeds={}'.format(
