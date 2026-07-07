@@ -6,11 +6,13 @@ from aan.models.encoder_cell.GCN import GraphConvolutionalLayer
 from aan.models.encoder_cell.GATs import GraphAttentionLayer
 from aan.models.encoder_cell.RNN import RecurrentNeuralNetwork
 from aan.models.encoder_cell.GRU import GatedRecurrentUnit
+from aan.models.encoder_cell.TAU import (TransformerAssociationUnit,
+                                         TransformerChildAttention)
 from aan.models.encoders.readout_max import MaxpoolReadoutLayer
 from aan.data_structures.batch_neurotree import BatchNeuroTree
 
 VERSION_ALIASES = {'egaau': 'egau'}
-SUPPORTED_VERSIONS = ('ran', 'raan', 'gau', 'gaau', 'egau')
+SUPPORTED_VERSIONS = ('ran', 'raan', 'gau', 'gaau', 'egau', 'tau')
 
 
 def build_cells(version, input_dim_with_bias, hidden_dim):
@@ -18,10 +20,15 @@ def build_cells(version, input_dim_with_bias, hidden_dim):
 
     ran:  RNN + GCN      raan: RNN + GAT
     gau:  GRU + GCN      gaau: GRU + GAT     egau: GRU + edge-GCN
+    tau:  residual-stream combine + masked multi-head attention (transformer)
     """
     version = VERSION_ALIASES.get(version, version)
     if version not in SUPPORTED_VERSIONS:
         raise ValueError('unknown version: {} (expected one of {})'.format(version, SUPPORTED_VERSIONS))
+
+    if version == 'tau':
+        return (TransformerAssociationUnit(input_dim_with_bias, hidden_dim),
+                TransformerChildAttention(hidden_dim))
 
     if version in ('ran', 'raan'):
         rnn = RecurrentNeuralNetwork(input_dim_with_bias, hidden_dim)
