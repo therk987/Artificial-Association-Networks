@@ -341,10 +341,27 @@ def _subsample_train(part, fraction, seed):
     return part
 
 
-def build_dataset(name, limit=None, subsample_seed=0, ablate='none'):
+def _shuffle_train_labels(part, seed):
+    """Permute the TRAIN labels within a domain (mechanism control for E4:
+    the shared cell receives the same extra input batches and update count,
+    but their supervision carries no task structure)."""
+    xs, ys = part['splits']['train']
+    g = torch.Generator().manual_seed(seed + 999)
+    perm = torch.randperm(len(ys), generator=g)
+    if torch.is_tensor(ys):
+        ys = ys[perm]
+    else:
+        ys = [ys[i] for i in perm.tolist()]
+    part['splits']['train'] = (xs, ys)
+    return part
+
+
+def build_dataset(name, limit=None, subsample_seed=0, ablate='none',
+                  shuffle_domains=()):
     """``name`` is a comma list of domain specs; ``domain@0.1`` keeps a
     deterministic 10% of that domain's training data (E4 low-resource).
-    ``ablate`` applies the E6 structural degradation (algorithms only)."""
+    ``ablate`` applies the E6 structural degradation (algorithms only);
+    ``shuffle_domains`` permutes those domains' train labels (E4 control)."""
     parts_list = []
     for spec in (n.strip() for n in name.split(',') if n.strip()):
         fraction = None
@@ -360,7 +377,13 @@ def build_dataset(name, limit=None, subsample_seed=0, ablate='none'):
             part = PARTS[spec](limit)
         if fraction is not None:
             part = _subsample_train(part, fraction, subsample_seed)
+        if part['domain'] in shuffle_domains:
+            part = _shuffle_train_labels(part, subsample_seed)
         parts_list.append(part)
+    unknown = set(shuffle_domains) - {p['domain'] for p in parts_list}
+    if unknown:
+        raise ValueError('shuffle domains {} not among parts {}'.format(
+            sorted(unknown), sorted(p['domain'] for p in parts_list)))
     return build_from_parts(parts_list)
 
 
@@ -387,9 +410,10 @@ def evaluate(model, loader, device):
 
 def run_one_seed(args, seed, device):
     set_seed(seed)
+    shuffle = tuple(d.strip() for d in args.shuffle_domains.split(',') if d.strip())
     train_ds, valid_ds, test_ds, feature_encoders, class_count = \
         build_dataset(args.dataset, limit=args.limit, subsample_seed=seed,
-                      ablate=args.ablate)
+                      ablate=args.ablate, shuffle_domains=shuffle)
 
     # NOTE: persistent_workers deadlocked with 3 loaders x 8 workers on
     # torch 2.1 nightly (main thread stuck in poll at epoch boundaries) —
@@ -464,6 +488,9 @@ def main():
     parser.add_argument('--ablate', default='none',
                         choices=['none', 'single-parent', 'no-level-jump', 'both'],
                         help='E6 structural ablation (algorithms dataset)')
+    parser.add_argument('--shuffle-domains', default='',
+                        help='comma list of domains whose TRAIN labels are '
+                             'permuted (E4 mechanism control)')
     parser.add_argument('--device', default=default_device)
     parser.add_argument('--out', default=None, help='CSV path for per-seed results')
     parser.add_argument('--save-model', default=None,
