@@ -148,15 +148,43 @@ def run_seed(args, seed, device, rows):
     probe_ds = CombinedTreeDataset(parts, 'test', args.probe_size, seed + 1)
     probe_loader = DataLoader(probe_ds, batch_size=args.batch_size,
                               collate_fn=collate, num_workers=args.num_workers)
-    feats, labels_all, primaries = [], [], []
+    feats, labels_all, primaries, logits_all = [], [], [], []
     with torch.no_grad():
         for trees, _joint, labels, primary in probe_loader:
+            for t in trees:
+                t.reset_state()
+            outputs, _, _ = model(BatchNeuroTree(trees),
+                                  ['classification'] * len(trees))
+            logits_all.append(stack_outputs(outputs).cpu())
             feats.append(encode(model, trees, device))
             labels_all.append(labels)
             primaries.append(primary)
     feats = torch.cat(feats).to(device)
     labels_all = torch.cat(labels_all).to(device)
     primaries = torch.cat(primaries).to(device)
+    logits_all = torch.cat(logits_all).to(device)
+
+    # ---- within-model ceiling: the SAME frozen model's own joint head on
+    # the SAME held-out trees, restricted to trees whose primary domain is
+    # the queried one. This is the trained-with readout the probes should be
+    # compared against (no cross-model / cross-exposure confound).
+    for i, p in enumerate(parts):
+        mask = primaries == i
+        if not bool(mask.any()):
+            continue
+        offset = probe_ds.offsets[p['domain']]
+        y = labels_all[mask, i]
+        full = float((logits_all[mask].argmax(-1) == offset + y).float().mean())
+        sliced = float((logits_all[mask, offset:offset + p['classes']]
+                        .argmax(-1) == y).float().mean())
+        chance = 1.0 / p['classes']
+        rows.append({'seed': seed, 'probe': 'ceiling_' + p['domain'],
+                     'acc': sliced, 'chance': chance})
+        rows.append({'seed': seed, 'probe': 'ceiling_' + p['domain'] + '_full',
+                     'acc': full, 'chance': chance})
+        print('  seed {} ceiling[{}] sliced {:.4f} / full-argmax {:.4f} '
+              '(n={})'.format(seed, p['domain'], sliced, full,
+                              int(mask.sum())), flush=True)
 
     n_train = int(len(feats) * 0.8)
     targets = {p['domain']: (labels_all[:, i], p['classes'])
