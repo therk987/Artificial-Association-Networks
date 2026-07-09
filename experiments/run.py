@@ -503,6 +503,55 @@ def build_dataset(name, limit=None, subsample_seed=0, ablate='none',
 
 # ---------------------------------------------------------------------------
 
+class DomainBucketBatchSampler(torch.utils.data.Sampler):
+    """Yield single-domain batches, batch order shuffled each epoch.
+
+    The level-batched engine walks a batch level by level, so one deep tree
+    (e.g.\ the depth-81 MFCC chain) forces the whole batch through 81
+    sequential steps. With shuffled multi-domain batches nearly every batch
+    contains a deep tree, and the 8-domain joint epoch pays the deepest
+    domain's level count almost everywhere (measured 7,611s/epoch vs ~600s
+    for the sum of the solo epochs). Bucketing batches by domain keeps the
+    optimization interleaved across domains --- every epoch still visits
+    all domains in shuffled batch order --- while each batch pays only its
+    own domain's depth.
+    """
+
+    def __init__(self, domains, batch_size, shuffle=True, seed=0):
+        self.by_domain = defaultdict(list)
+        for i, d in enumerate(domains):
+            self.by_domain[d].append(i)
+        self.batch_size = batch_size
+        self.shuffle = shuffle
+        self.seed = seed
+        self.epoch = 0
+
+    def __iter__(self):
+        g = torch.Generator().manual_seed(self.seed + self.epoch)
+        self.epoch += 1
+        batches = []
+        for d in sorted(self.by_domain):
+            idx = self.by_domain[d]
+            order = torch.randperm(len(idx), generator=g).tolist() \
+                if self.shuffle else range(len(idx))
+            chunk = []
+            for j in order:
+                chunk.append(idx[j])
+                if len(chunk) == self.batch_size:
+                    batches.append(chunk)
+                    chunk = []
+            if chunk:
+                batches.append(chunk)
+        if self.shuffle:
+            batches = [batches[i] for i in
+                       torch.randperm(len(batches), generator=g).tolist()]
+        return iter(batches)
+
+    def __len__(self):
+        return sum((len(v) + self.batch_size - 1) // self.batch_size
+                   for v in self.by_domain.values())
+
+
 def evaluate(model, loader, device):
     """Return (overall accuracy, per-domain accuracy dict)."""
     model.eval()
@@ -533,9 +582,18 @@ def run_one_seed(args, seed, device):
     # torch 2.1 nightly (main thread stuck in poll at epoch boundaries) —
     # workers are recreated per epoch instead, which costs ~1-2s/epoch.
     workers = dict(num_workers=args.num_workers)
-    train_loader = createNeuroDataloader(train_ds, batch_size=args.batch_size, shuffle=True, **workers)
-    valid_loader = createNeuroDataloader(valid_ds, batch_size=args.batch_size, **workers)
-    test_loader = createNeuroDataloader(test_ds, batch_size=args.batch_size, **workers)
+    if args.bucket_domains:
+        def bucketed(ds, shuffle):
+            sampler = DomainBucketBatchSampler(
+                ds.D, args.batch_size, shuffle=shuffle, seed=seed)
+            return createNeuroDataloader(ds, batch_sampler=sampler, **workers)
+        train_loader = bucketed(train_ds, shuffle=True)
+        valid_loader = bucketed(valid_ds, shuffle=False)
+        test_loader = bucketed(test_ds, shuffle=False)
+    else:
+        train_loader = createNeuroDataloader(train_ds, batch_size=args.batch_size, shuffle=True, **workers)
+        valid_loader = createNeuroDataloader(valid_ds, batch_size=args.batch_size, **workers)
+        test_loader = createNeuroDataloader(test_ds, batch_size=args.batch_size, **workers)
 
     model = ArtificialAssociationNeuralNetworks(
         args.input_dim, args.hidden_dim,
@@ -605,6 +663,10 @@ def main():
     parser.add_argument('--shuffle-domains', default='',
                         help='comma list of domains whose TRAIN labels are '
                              'permuted (E4 mechanism control)')
+    parser.add_argument('--bucket-domains', action='store_true',
+                        help='single-domain batches in shuffled order '
+                             '(throughput: deep-tree domains stop imposing '
+                             'their level count on every mixed batch)')
     parser.add_argument('--device', default=default_device)
     parser.add_argument('--out', default=None, help='CSV path for per-seed results')
     parser.add_argument('--save-model', default=None,
