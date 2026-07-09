@@ -486,7 +486,7 @@ def main():
     parser.add_argument('--limit', type=int, default=None,
                         help='subsample each domain for a quick smoke run')
     parser.add_argument('--ablate', default='none',
-                        choices=['none', 'single-parent', 'no-level-jump', 'both'],
+                        choices=['none', 'single-parent', 'no-level-jump', 'edge-cut', 'both'],
                         help='E6 structural ablation (algorithms dataset)')
     parser.add_argument('--shuffle-domains', default='',
                         help='comma list of domains whose TRAIN labels are '
