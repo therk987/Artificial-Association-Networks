@@ -273,12 +273,126 @@ def algorithms_parts(limit=None, ablate='none'):
     }
 
 
+class GloveWord2Vec(nn.Module):
+    """SST leaf encoder psi_language (paper, Exp. 5 'tree'): frozen GloVe-300
+    embedding of the node's vocab index + FC(300, 128), replicating the legacy
+    Word2Vec('glove') exactly — including its normalize-before-squeeze over the
+    singleton length dim, which reduces to sign/ReLU feature binarization."""
+
+    def __init__(self, embedding_matrix, output_dim=128):
+        super().__init__()
+        self.embedding = nn.Embedding.from_pretrained(embedding_matrix, freeze=True)
+        self.fc = nn.Linear(embedding_matrix.shape[1], output_dim)
+        nn.init.xavier_uniform_(self.fc.weight.data, gain=1.414)
+
+    def forward(self, batch_tree):
+        device = self.fc.weight.device
+        x = torch.stack(batch_tree.getX()).to(device)  # (B, 1) vocab indices
+        out = self.fc(self.embedding(x))               # (B, 1, 128)
+        out = F.normalize(out)                         # over dim 1 (legacy)
+        out = F.relu(out)
+        return out.squeeze(1)
+
+
+def sst_parts(limit=None):
+    """SST binary sentence task on constituency neurotrees (paper, Exp. 5).
+
+    Every node is a 'language' neuronode holding one vocab index (leaf = word,
+    internal = '$UNK'); label = round(sentiment score). 8544/1101/2210."""
+    from aan.datas.text.sst import SST_DATA, sst_glove_embedding
+
+    data = SST_DATA(_data_root('text'))
+    splits = {}
+    for split in ('train', 'valid', 'test'):
+        trees, ys = data[split]
+        if limit:
+            trees, ys = trees[:limit], ys[:limit]
+        splits[split] = (trees, ys)
+
+    return {
+        'domain': 'language',
+        'splits': splits,
+        'builder': prebuilt2neurotree,
+        'encoder': GloveWord2Vec(sst_glove_embedding(_data_root('text'))),
+        'classes': 2,
+    }
+
+
+def upfd_graph2neurotree(data, mt):
+    """Propagation graph -> root whose children are the graph nodes with
+    A_c = the (directed) adjacency (paper Prop. 4, single-round construction)."""
+    features, edge_index = data
+    n = features.shape[0]
+    A_c = torch.zeros(n, n)
+    A_c[edge_index[0], edge_index[1]] = 1.0
+    root = NeuroNode(None, None, A_c=A_c)
+    for i in range(n):
+        root.insert(NeuroNode(features[i], 'graph'))
+    return root
+
+
+def upfd_parts(limit=None):
+    """UPFD-GOS fake-news graphs (paper, Exp. 5): gossipcop, 10-d 'profile'
+    node features, official 1092/546/3826 split, FC(10, 128) node encoder."""
+    from aan.datas.graph.load import UPFD_DATA
+    from aan.models.feature_encoders.domains.graph2vec import Graph2Vec
+
+    data = UPFD_DATA(name='gossipcop', feature='profile')
+    splits = {}
+    for split in ('train', 'valid', 'test'):
+        xs, ys = data[split]
+        if limit:
+            xs, ys = xs[:limit], ys[:limit]
+        splits[split] = (xs, ys)
+
+    return {
+        'domain': 'graph',
+        'splits': splits,
+        'builder': upfd_graph2neurotree,
+        'encoder': Graph2Vec(input_dim=10, out_features=128),
+        'classes': 2,
+    }
+
+
+def iris_tabular2neurotree(data, mt):
+    """4-feature row -> depth-3 chain (paper, Exp. 5 'tabular')."""
+    leaf = NeuroNode(data, 'tabular')
+    mid = NeuroNode(None, None, C=[leaf])
+    return NeuroNode(None, None, C=[mid])
+
+
+def iris_parts(limit=None):
+    """Iris (paper, Exp. 5): 96/24/30 standardized split, psi_tabular =
+    FC(4, 128) + L2 normalization (eps 1e-12) + ReLU, depth-3 neurotree."""
+    from aan.datas.tabular.load import IRIS_DATA
+    from aan.models.feature_encoders.domains.tabular2vec import Tabular2Vec
+
+    data = IRIS_DATA()
+    splits = {}
+    for split in ('train', 'valid', 'test'):
+        xs, ys = data[split]
+        if limit:
+            xs, ys = xs[:limit], ys[:limit]
+        splits[split] = (xs, ys)
+
+    return {
+        'domain': 'tabular',
+        'splits': splits,
+        'builder': iris_tabular2neurotree,
+        'encoder': Tabular2Vec(input_dim=4, output_size=128),
+        'classes': 3,
+    }
+
+
 PARTS = {
     'mnist': mnist_parts,
     'speechcommands': speechcommands_parts,
     'speechcommands_mfcc': speechcommands_mfcc_parts,
     'imdb': imdb_parts,
     'algorithms': algorithms_parts,
+    'sst': sst_parts,
+    'upfd': upfd_parts,
+    'iris': iris_parts,
 }
 
 # backward-compatible alias (bench scripts referenced DATASETS)
