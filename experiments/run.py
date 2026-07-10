@@ -608,7 +608,15 @@ def run_one_seed(args, seed, device):
         model.train()
         epoch_loss = 0.0
         t0 = time.perf_counter()
+        # timing split: `wait` = blocked on the dataloader (worker-side tree
+        # building), the rest = main-process compute attributed to the
+        # batch's domain (single-domain batches under --bucket-domains).
+        domain_s = defaultdict(float)
+        wait_s = 0.0
+        t_prev = t0
         for batch, y, mt, d in train_loader:
+            t_in = time.perf_counter()
+            wait_s += t_in - t_prev
             outputs, _, _ = model(batch, list(mt))
             logits = stack_outputs(outputs)
             targets = torch.stack(y, dim=0).to(device, dtype=torch.long).view(-1)
@@ -617,15 +625,23 @@ def run_one_seed(args, seed, device):
             loss.backward()
             optimizer.step()
             epoch_loss += loss.item()
+            t_prev = time.perf_counter()
+            domain_s[d[0]] += t_prev - t_in
 
+        t_eval = time.perf_counter()
         valid_acc, _ = evaluate(model, valid_loader, device)
         if valid_acc >= best['valid_acc']:  # model selection on validation accuracy
             test_acc, per_domain = evaluate(model, test_loader, device)
             best.update(valid_acc=valid_acc, test_acc=test_acc,
                         epoch=epoch, per_domain=per_domain)
-        print('  seed {} epoch {}: loss {:.4f} valid {:.4f} ({:.1f}s)'.format(
-            seed, epoch, epoch_loss / max(len(train_loader), 1), valid_acc,
-            time.perf_counter() - t0), flush=True)
+        eval_s = time.perf_counter() - t_eval
+        split = ' '.join('%s %.0f' % (k, v) for k, v in
+                         sorted(domain_s.items(), key=lambda kv: -kv[1]))
+        print('  seed {} epoch {}: loss {:.4f} valid {:.4f} ({:.1f}s)'
+              '  [wait {:.0f} | {} | eval {:.0f}]'.format(
+                  seed, epoch, epoch_loss / max(len(train_loader), 1),
+                  valid_acc, time.perf_counter() - t0, wait_s, split, eval_s),
+              flush=True)
 
     if args.save_model:
         os.makedirs(args.save_model, exist_ok=True)
