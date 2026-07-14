@@ -177,3 +177,49 @@ def test_star_neurotree_pipeline_equals_encoder_layer():
     agg = captured['agg'][:, :C, :]
     assert torch.allclose(agg, ref, atol=1e-5), \
         'max diff {}'.format((agg - ref).abs().max().item())
+
+
+def _sorted_batches(n, C):
+    """Ascending-vs-descending scalar sequences: the two classes contain
+    the SAME multiset per pair and differ only by presentation order, so
+    only position information can separate them."""
+    vals = torch.rand(n, C).sort(dim=1).values
+    emb = torch.zeros(n, C, HIDDEN)
+    emb[..., 0] = vals
+    x = torch.cat([emb, emb.flip(1)])
+    y = torch.cat([torch.ones(n), torch.zeros(n)])
+    return x, y
+
+
+def test_sibling_order_task_impossible_without_pe_learnable_with():
+    """Self-attention is permutation-equivariant, so without PE the
+    ascending and descending presentations of the same multiset yield
+    identical pooled aggregations -- no head can ever separate them (the
+    textbook reason the transformer needs PE at all). With sibling_pe the
+    same architecture learns the task."""
+    torch.manual_seed(6)
+    C = 5
+    full = torch.ones(C, C)
+
+    # without PE: pooled outputs of a pair are EXACTLY identical
+    gnn_off, _ = make_pair(seed=6, sibling_pe=False)
+    x, _ = _sorted_batches(4, C)
+    pooled = gnn_off([full] * 8, x).amax(dim=1)
+    assert torch.allclose(pooled[:4], pooled[4:], atol=1e-6), \
+        'permutation-invariant model must not distinguish the orders'
+
+    # with PE: a linear head on the max-pooled aggregation learns it
+    gnn_on, _ = make_pair(seed=6, sibling_pe=True)
+    head = nn.Linear(HIDDEN, 1)
+    opt = torch.optim.Adam(list(gnn_on.parameters()) + list(head.parameters()),
+                           lr=1e-2)
+    for _ in range(300):
+        x, y = _sorted_batches(16, C)
+        logits = head(gnn_on([full] * 32, x).amax(dim=1)).squeeze(-1)
+        loss = nn.functional.binary_cross_entropy_with_logits(logits, y)
+        opt.zero_grad(); loss.backward(); opt.step()
+    with torch.no_grad():
+        x, y = _sorted_batches(128, C)
+        acc = ((head(gnn_on([full] * 256, x).amax(dim=1)).squeeze(-1) > 0)
+               .float() == y).float().mean().item()
+    assert acc > 0.9, 'sibling_pe failed to make order learnable: %.2f' % acc
