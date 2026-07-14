@@ -1,6 +1,6 @@
 """Stanford Sentiment Treebank constituency neurotrees (paper, Experiment 5, 'tree').
 
-Construction (matches the original research environment, dolphin-coding-mlops):
+Construction (matches the original research environment):
 the HuggingFace ``sst`` PTB strings were parsed with a cs224u-style PTBParser
 into neurotrees where EVERY node is a ``'language'`` neuronode holding a single
 vocabulary index — leaves hold the lower-cased word's index, internal nodes
@@ -17,7 +17,7 @@ vocabulary (``sst_train_vocab.pkl``, cs224u ``get_vocab(mincount=2)``, 8736
 entries incl. '$UNK'); words missing from GloVe get fixed random vectors in
 [-0.5, 0.5] (cs224u ``create_pretrained_embedding``). The resulting matrix is
 cached as ``sst_glove300_embedding.pt``; rebuilding it needs the GloVe text
-file (``AAN_GLOVE_300D`` or the legacy default path).
+file (set ``AAN_GLOVE_300D``).
 """
 import os
 import pickle
@@ -29,11 +29,9 @@ from aan.data_structures.neuronode import NeuroNode
 
 _LEGACY_SST_PKL_CANDIDATES = (
     os.environ.get('AAN_LEGACY_SST_PKL', ''),
-    '/Users/seokjunkim/bigedu/dolphin-coding-mlops/dataset/text/sentiment/sst3-neurotree.pkl',
 )
 _GLOVE_300D_CANDIDATES = (
     os.environ.get('AAN_GLOVE_300D', ''),
-    '/Users/seokjunkim/bigedu/dolphin-coding-mlops/models/pretrained/glove.6B/glove.6B.300d.txt',
 )
 
 

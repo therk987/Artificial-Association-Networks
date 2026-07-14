@@ -22,7 +22,6 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 _RAW_DIR_CANDIDATES = (
     os.environ.get('AAN_UPFD_RAW', ''),
     os.path.join(_HERE, 'UPFD', 'gossipcop', 'raw'),
-    '/Users/seokjunkim/bigedu/dolphin-coding-mlops/dataset/graph/UPFD/gossipcop/raw',
 )
 
 
