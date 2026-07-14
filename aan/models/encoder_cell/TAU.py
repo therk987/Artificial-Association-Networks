@@ -83,12 +83,30 @@ class TransformerAssociationUnit(nn.Module):
         return (1 - z) * h + z * out
 
 
+def sinusoidal_pe(n, dim, device=None, dtype=None):
+    """(n, dim) sinusoidal position table (Vaswani et al., 2017, eq. PE)."""
+    pos = torch.arange(n, device=device, dtype=torch.float32).unsqueeze(1)
+    idx = torch.arange(0, dim, 2, device=device, dtype=torch.float32)
+    div = torch.exp(idx * (-np.log(10000.0) / dim))
+    pe = torch.zeros(n, dim, device=device)
+    pe[:, 0::2] = torch.sin(pos * div)
+    pe[:, 1::2] = torch.cos(pos * div[: pe[:, 1::2].shape[1]])
+    return pe.to(dtype) if dtype is not None else pe
+
+
 class TransformerChildAttention(nn.Module):
 
-    def __init__(self, hidden_dim, heads=4, ff_mult=2):
+    def __init__(self, hidden_dim, heads=4, ff_mult=2, sibling_pe=False):
+        """``sibling_pe=True`` adds a sinusoidal encoding of each child's
+        position (list order) to its state before attention, restoring
+        sibling-order sensitivity (by default the cell family is
+        permutation-invariant over siblings given the adjacency). Off by
+        default: none of the paper's datasets encode order in sibling
+        position, and the engines' A=None identity semantics must hold."""
         super().__init__()
         self.hidden_dim = hidden_dim
         self.heads = heads
+        self.sibling_pe = sibling_pe
         self.ln_attn = nn.LayerNorm(hidden_dim)
         self.attn = nn.MultiheadAttention(hidden_dim, heads, batch_first=True)
         self.ln_ff = nn.LayerNorm(hidden_dim)
@@ -123,6 +141,10 @@ class TransformerChildAttention(nn.Module):
         none_flags = [a is None for a in adj]
         if all(none_flags):
             return Wh
+        unmixed = Wh
+        if self.sibling_pe:
+            Wh = Wh + sinusoidal_pe(Wh.shape[1], self.hidden_dim,
+                                    device=Wh.device, dtype=Wh.dtype)
         blocked = self.blocked_mask(adj, Wh.shape[1], Wh.device)
         mask = blocked.repeat_interleave(self.heads, dim=0)
         q = self.ln_attn(Wh)
@@ -131,5 +153,5 @@ class TransformerChildAttention(nn.Module):
         out = out + self.ff(self.ln_ff(out))
         if any(none_flags):
             none_rows = torch.tensor(none_flags, device=Wh.device).view(-1, 1, 1)
-            out = torch.where(none_rows, Wh, out)
+            out = torch.where(none_rows, unmixed, out)
         return out
