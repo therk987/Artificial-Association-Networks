@@ -54,15 +54,16 @@ class TransformerAssociationUnit(nn.Module):
 
     def __init__(self, input_dim, hidden_dim, ff_mult=2, variant='post'):
         super().__init__()
-        if variant not in ('post', 'pre', 'gated'):
+        if variant not in ('post', 'pre', 'gated', 'inject'):
             raise ValueError('unknown TAU variant: %r' % (variant,))
         self.input_dim = input_dim
         self.hidden_dim = hidden_dim
         self.variant = variant
         self.inject = nn.Linear(input_dim, hidden_dim)
-        self.ln_ff = nn.LayerNorm(hidden_dim)
-        self.ff = _feed_forward(hidden_dim, ff_mult)
-        self.ln_out = nn.LayerNorm(hidden_dim)
+        if variant != 'inject':
+            self.ln_ff = nn.LayerNorm(hidden_dim)
+            self.ff = _feed_forward(hidden_dim, ff_mult)
+            self.ln_out = nn.LayerNorm(hidden_dim)
         if variant == 'gated':
             self.gate = nn.Linear(2 * hidden_dim, hidden_dim)
         for param in self.parameters():
@@ -73,6 +74,11 @@ class TransformerAssociationUnit(nn.Module):
 
     def forward(self, x, h):
         u = h + self.inject(x)
+        if self.variant == 'inject':
+            # tau1: the whole encoder layer lives in the CLS aggregation;
+            # the combine only injects the node input into the residual
+            # stream (u = h_CLS + W x), keeping one cell = one layer.
+            return u
         u = u + self.ff(self.ln_ff(u))
         if self.variant == 'pre':
             return u
@@ -81,6 +87,70 @@ class TransformerAssociationUnit(nn.Module):
             return out
         z = torch.sigmoid(self.gate(torch.cat([h, out], dim=-1)))
         return (1 - z) * h + z * out
+
+
+class CLSChildAttention(nn.Module):
+    """tau1 aggregation: ONE pre-LN transformer encoder layer over
+    [CLS; children], CLS row = the parent's aggregated state.
+
+    Restores the family's cell-for-cell design law (GAU cell = one GRU
+    step, RAN = one RNN step, graph slot = one GCN/GAT round): one tau1
+    cell application = one transformer encoder layer + CLS readout, with
+    the node input injected into the residual stream by the combine.
+
+    Mask semantics: CLS attends every real child and itself, and every
+    real child attends CLS (so the parent can collect even when A=None);
+    child<->child attention follows A~ = A + I exactly as in
+    TransformerChildAttention; padded rows keep a self-loop only.
+    """
+
+    needs_counts = True
+
+    def __init__(self, hidden_dim, heads=4, ff_mult=2, sibling_pe=False):
+        super().__init__()
+        self.hidden_dim = hidden_dim
+        self.heads = heads
+        self.sibling_pe = sibling_pe
+        self.cls = nn.Parameter(torch.zeros(1, 1, hidden_dim))
+        nn.init.normal_(self.cls, std=0.02)
+        self.ln_attn = nn.LayerNorm(hidden_dim)
+        self.attn = nn.MultiheadAttention(hidden_dim, heads, batch_first=True)
+        self.ln_ff = nn.LayerNorm(hidden_dim)
+        self.ff = _feed_forward(hidden_dim, ff_mult)
+
+    def blocked_mask(self, adj_list, counts, n_children, device):
+        """(B, C+1, C+1) bool mask over [CLS; children], True = blocked."""
+        B = len(adj_list)
+        allowed = torch.zeros(B, n_children + 1, n_children + 1,
+                              dtype=torch.bool, device=device)
+        allowed[:, torch.arange(n_children + 1),
+                torch.arange(n_children + 1)] = True  # self-loops
+        for i, a in enumerate(adj_list):
+            k = int(counts[i]) if counts is not None else n_children
+            if k > 0:
+                allowed[i, 0, 1:k + 1] = True   # CLS -> real children
+                allowed[i, 1:k + 1, 0] = True   # real children -> CLS
+            if a is None:
+                continue                        # siblings do not mix
+            if isinstance(a, np.ndarray):
+                a = torch.from_numpy(a)
+            a = a.to(device=device)
+            ka = a.shape[-1]
+            allowed[i, 1:ka + 1, 1:ka + 1] |= a.reshape(ka, ka) != 0
+        return ~allowed
+
+    def forward(self, adj, Wh, child_counts=None):
+        B, C, H = Wh.shape
+        if self.sibling_pe:
+            Wh = Wh + sinusoidal_pe(C, H, device=Wh.device, dtype=Wh.dtype)
+        tokens = torch.cat([self.cls.expand(B, -1, -1), Wh], dim=1)
+        blocked = self.blocked_mask(adj, child_counts, C, Wh.device)
+        mask = blocked.repeat_interleave(self.heads, dim=0)
+        q = self.ln_attn(tokens)
+        attn_out, _ = self.attn(q, q, q, attn_mask=mask, need_weights=False)
+        out = tokens + attn_out
+        out = out + self.ff(self.ln_ff(out))
+        return out
 
 
 def sinusoidal_pe(n, dim, device=None, dtype=None):

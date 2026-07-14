@@ -7,22 +7,28 @@ from aan.models.encoder_cell.GATs import GraphAttentionLayer
 from aan.models.encoder_cell.RNN import RecurrentNeuralNetwork
 from aan.models.encoder_cell.GRU import GatedRecurrentUnit
 from aan.models.encoder_cell.TAU import (TransformerAssociationUnit,
-                                         TransformerChildAttention)
+                                         TransformerChildAttention,
+                                         CLSChildAttention)
 from aan.models.encoders.readout_max import MaxpoolReadoutLayer
 from aan.models.encoders.readout_attention import AttentionPoolReadout
+from aan.models.encoders.readout_cls import CLSReadout
 from aan.data_structures.batch_neurotree import BatchNeuroTree
 
 VERSION_ALIASES = {'egaau': 'egau'}
 SUPPORTED_VERSIONS = ('ran', 'raan', 'gau', 'gaau', 'egau', 'tau', 'tau2',
-                      'ptau', 'gtau')
-TAU_VARIANTS = {'tau': 'post', 'tau2': 'post', 'ptau': 'pre', 'gtau': 'gated'}
+                      'ptau', 'gtau', 'tau1')
+TAU_VARIANTS = {'tau': 'post', 'tau2': 'post', 'ptau': 'pre', 'gtau': 'gated',
+                'tau1': 'inject'}
 
 
 def build_readout(version, hidden_dim):
     """tau2 = the tau cells with attention-pool readout instead of maxpool
     (selective readout; removes the elementwise-max retrieval bottleneck)."""
-    if VERSION_ALIASES.get(version, version) == 'tau2':
+    version = VERSION_ALIASES.get(version, version)
+    if version == 'tau2':
         return AttentionPoolReadout(hidden_dim)
+    if version == 'tau1':
+        return CLSReadout()
     return MaxpoolReadoutLayer()
 
 
@@ -34,10 +40,19 @@ def build_cells(version, input_dim_with_bias, hidden_dim):
     tau:  residual-stream combine + masked multi-head attention (transformer)
     ptau: tau with a pure pre-LN combine (no per-step output norm)
     gtau: tau with a GTrXL-style carry gate on the combine output
+    tau1: cell-for-cell transformer -- one cell application IS one pre-LN
+          encoder layer over [CLS; children], parent = CLS row, node input
+          injected into the residual stream (as GAU is exactly one GRU step)
     """
     version = VERSION_ALIASES.get(version, version)
     if version not in SUPPORTED_VERSIONS:
         raise ValueError('unknown version: {} (expected one of {})'.format(version, SUPPORTED_VERSIONS))
+
+    if version == 'tau1':
+        # cell-for-cell law: one tau1 cell = one encoder layer + CLS readout
+        return (TransformerAssociationUnit(input_dim_with_bias, hidden_dim,
+                                           variant='inject'),
+                CLSChildAttention(hidden_dim))
 
     if version in TAU_VARIANTS:
         return (TransformerAssociationUnit(input_dim_with_bias, hidden_dim,
@@ -113,7 +128,11 @@ class RecursiveAssociationNeuralNetworks(nn.Module):
             # Children's hidden states are aggregated under the children's
             # relational information A_c stored in the current node.
             A_c = batch_tree.getChildAdjacencyMatrix()
-            hiddens = self.gnn(A_c, child_hiddens)
+            if getattr(self.gnn, 'needs_counts', False):
+                hiddens = self.gnn(A_c, child_hiddens,
+                                   batch_tree.getChildCount())
+            else:
+                hiddens = self.gnn(A_c, child_hiddens)
             hiddens, indices = self.readout(hiddens, batch_tree.getChildCount())
             if indices is not None:
                 batch_tree.setIndices(indices)

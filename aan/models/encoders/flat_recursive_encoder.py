@@ -157,7 +157,11 @@ class FlatRecursiveAssociationNeuralNetworks(nn.Module):
                     idx = torch.tensor(level['padded_index'], dtype=torch.long, device=device)
                     child_hiddens = buffer[idx]  # (n, maxC, H)
 
-                hiddens = self.gnn(level['A_c'], child_hiddens)
+                if getattr(self.gnn, 'needs_counts', False):
+                    hiddens = self.gnn(level['A_c'], child_hiddens,
+                                       level['child_counts'])
+                else:
+                    hiddens = self.gnn(level['A_c'], child_hiddens)
                 hiddens, indices = self.readout(hiddens, level['child_counts'])
                 if indices is not None:
                     level['batch_tree'].setIndices(indices)

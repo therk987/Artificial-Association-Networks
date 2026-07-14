@@ -223,3 +223,113 @@ def test_sibling_order_task_impossible_without_pe_learnable_with():
         acc = ((head(gnn_on([full] * 256, x).amax(dim=1)).squeeze(-1) > 0)
                .float() == y).float().mean().item()
     assert acc > 0.9, 'sibling_pe failed to make order learnable: %.2f' % acc
+
+
+def _copy_into_layer(gnn):
+    layer = nn.TransformerEncoderLayer(
+        d_model=gnn.hidden_dim, nhead=gnn.heads,
+        dim_feedforward=gnn.ff[0].out_features,
+        dropout=0.0, activation='gelu', batch_first=True, norm_first=True)
+    with torch.no_grad():
+        layer.self_attn.in_proj_weight.copy_(gnn.attn.in_proj_weight)
+        layer.self_attn.in_proj_bias.copy_(gnn.attn.in_proj_bias)
+        layer.self_attn.out_proj.weight.copy_(gnn.attn.out_proj.weight)
+        layer.self_attn.out_proj.bias.copy_(gnn.attn.out_proj.bias)
+        layer.norm1.weight.copy_(gnn.ln_attn.weight)
+        layer.norm1.bias.copy_(gnn.ln_attn.bias)
+        layer.norm2.weight.copy_(gnn.ln_ff.weight)
+        layer.norm2.bias.copy_(gnn.ln_ff.bias)
+        layer.linear1.weight.copy_(gnn.ff[0].weight)
+        layer.linear1.bias.copy_(gnn.ff[0].bias)
+        layer.linear2.weight.copy_(gnn.ff[2].weight)
+        layer.linear2.bias.copy_(gnn.ff[2].bias)
+    return layer
+
+
+def test_tau1_cell_is_one_encoder_layer():
+    """The cell-for-cell law for the transformer (as GAU is to the GRU):
+    one tau1 cell application = one pre-LN encoder layer over
+    [CLS; children] + CLS readout. Verified module-level by weight copy."""
+    from aan.models.encoder_cell.TAU import CLSChildAttention
+    torch.manual_seed(7)
+    gnn = CLSChildAttention(HIDDEN, heads=HEADS, ff_mult=FF_MULT)
+    layer = _copy_into_layer(gnn)
+    B, C = 3, 5
+    children = torch.randn(B, C, HIDDEN)
+    full = torch.ones(C, C)
+    out = gnn([full] * B, children, [C] * B)     # (B, C+1, H), CLS first
+    ref_tokens = torch.cat([gnn.cls.expand(B, -1, -1), children], dim=1)
+    ref = layer(ref_tokens)
+    assert torch.allclose(out, ref, atol=1e-6), \
+        'max diff {}'.format((out - ref).abs().max().item())
+
+
+def test_tau1_star_tree_parent_is_cls_of_encoder_layer():
+    """Inside the real engine: on a star neurotree the state entering the
+    root combine IS the CLS output of one encoder layer over
+    [CLS; leaf embeddings]; the combine then only injects the root input
+    into the residual stream (here x=None, so the parent equals CLS output
+    plus the constant injection of the zero feature)."""
+    from test_flat_engine import make_engines, leaf
+    from aan.data_structures.neuronode import NeuroNode
+    from aan.data_structures.batch_neurotree import BatchNeuroTree
+
+    torch.manual_seed(8)
+    recursive, flat = make_engines('tau1')
+    engine = flat
+    gnn = engine.gnn
+
+    C = 4
+    children = [leaf() for _ in range(C)]
+    root = NeuroNode(None, None, A_c=torch.ones(C, C), C=children)
+
+    captured = {}
+
+    def grab_gnn(_m, inputs, out):
+        captured['tokens'] = inputs[1].detach()
+        captured['gnn_out'] = out.detach()
+
+    def grab_readout(_m, _inp, out):
+        captured['cls'] = out[0].detach()
+
+    h1 = gnn.register_forward_hook(grab_gnn)
+    h2 = engine.readout.register_forward_hook(grab_readout)
+    try:
+        root.reset_state()
+        engine(BatchNeuroTree([root]))
+    finally:
+        h1.remove()
+        h2.remove()
+
+    leaf_states = captured['tokens'][:, :C, :]
+    layer = _copy_into_layer(gnn)
+    ref_tokens = torch.cat([gnn.cls.expand(1, -1, -1), leaf_states], dim=1)
+    ref = layer(ref_tokens)
+
+    assert torch.allclose(captured['gnn_out'][:, :C + 1, :], ref, atol=1e-5)
+    assert torch.allclose(captured['cls'].squeeze(1), ref[:, 0], atol=1e-5), \
+        'parent readout must be the CLS row of the encoder layer'
+
+
+def test_engines_match_tau1():
+    """Flat and recursive engines agree for tau1 (outputs and gradients),
+    same guarantee as for the rest of the cell family."""
+    from test_flat_engine import make_engines, make_mixed_trees, run_engine
+    recursive, flat = make_engines('tau1')
+    trees = make_mixed_trees()
+    out_r = run_engine(recursive, trees)
+    out_f = run_engine(flat, trees)
+    assert torch.allclose(out_r, out_f, atol=1e-5), \
+        'tau1: max diff {}'.format((out_r - out_f).abs().max().item())
+
+    out_r.sum().backward()
+    grads_r = {n: p.grad.clone() for n, p in recursive.named_parameters()
+               if p.grad is not None}
+    for p in recursive.parameters():
+        p.grad = None
+    run_engine(flat, make_mixed_trees()).sum().backward()
+    grads_f = {n: p.grad.clone() for n, p in recursive.named_parameters()
+               if p.grad is not None}
+    assert set(grads_r) == set(grads_f)
+    for name in grads_r:
+        assert torch.allclose(grads_r[name], grads_f[name], atol=1e-5), name
