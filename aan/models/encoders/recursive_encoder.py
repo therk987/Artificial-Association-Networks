@@ -8,7 +8,7 @@ from aan.models.encoder_cell.RNN import RecurrentNeuralNetwork
 from aan.models.encoder_cell.GRU import GatedRecurrentUnit
 from aan.models.encoder_cell.TAU import (TransformerAssociationUnit,
                                          TransformerChildAttention,
-                                         CLSChildAttention)
+                                         ParentChildAttention)
 from aan.models.encoders.readout_max import MaxpoolReadoutLayer
 from aan.models.encoders.readout_attention import AttentionPoolReadout
 from aan.models.encoders.readout_cls import CLSReadout
@@ -18,7 +18,7 @@ VERSION_ALIASES = {'egaau': 'egau'}
 SUPPORTED_VERSIONS = ('ran', 'raan', 'gau', 'gaau', 'egau', 'tau', 'tau2',
                       'ptau', 'gtau', 'tau1')
 TAU_VARIANTS = {'tau': 'post', 'tau2': 'post', 'ptau': 'pre', 'gtau': 'gated',
-                'tau1': 'inject'}
+                'tau1': 'identity'}
 
 
 def build_readout(version, hidden_dim):
@@ -41,18 +41,21 @@ def build_cells(version, input_dim_with_bias, hidden_dim):
     ptau: tau with a pure pre-LN combine (no per-step output norm)
     gtau: tau with a GTrXL-style carry gate on the combine output
     tau1: cell-for-cell transformer -- one cell application IS one pre-LN
-          encoder layer over [CLS; children], parent = CLS row, node input
-          injected into the residual stream (as GAU is exactly one GRU step)
+          encoder layer over [self; children]; the node's own embedded input
+          is the query row and its output row is the node's new state
+          (as GAU is exactly one GRU step); leaves apply the same layer to
+          their single self token
     """
     version = VERSION_ALIASES.get(version, version)
     if version not in SUPPORTED_VERSIONS:
         raise ValueError('unknown version: {} (expected one of {})'.format(version, SUPPORTED_VERSIONS))
 
     if version == 'tau1':
-        # cell-for-cell law: one tau1 cell = one encoder layer + CLS readout
-        return (TransformerAssociationUnit(input_dim_with_bias, hidden_dim,
-                                           variant='inject'),
-                CLSChildAttention(hidden_dim))
+        # cell-for-cell law: one tau1 cell application = one encoder layer
+        # over [self; children]; the self row is the node's new state
+        rnn = TransformerAssociationUnit(input_dim_with_bias, hidden_dim,
+                                         variant='identity')
+        return rnn, ParentChildAttention(hidden_dim, inject=rnn.inject)
 
     if version in TAU_VARIANTS:
         return (TransformerAssociationUnit(input_dim_with_bias, hidden_dim,
@@ -122,13 +125,22 @@ class RecursiveAssociationNeuralNetworks(nn.Module):
         node_features = self.feature_extraction_networks(batch_tree)
 
         if max_child_count == 0:  # leaf nodes
-            hiddens = self.zero_hiddens.repeat(node_features.shape[0], node_features.shape[1], 1)
+            if getattr(self.gnn, 'needs_x', False):
+                n = node_features.shape[0]
+                empty = self.zero_hiddens.repeat(n, 1, 1)[:, :0, :]
+                hiddens = self.gnn([None] * n, empty, [0] * n, node_features)
+                hiddens, _ = self.readout(hiddens, [0] * n)
+            else:
+                hiddens = self.zero_hiddens.repeat(node_features.shape[0], node_features.shape[1], 1)
         else:
             child_hiddens = batch_tree.get_child_hiddens(self.zero_hiddens)
             # Children's hidden states are aggregated under the children's
             # relational information A_c stored in the current node.
             A_c = batch_tree.getChildAdjacencyMatrix()
-            if getattr(self.gnn, 'needs_counts', False):
+            if getattr(self.gnn, 'needs_x', False):
+                hiddens = self.gnn(A_c, child_hiddens,
+                                   batch_tree.getChildCount(), node_features)
+            elif getattr(self.gnn, 'needs_counts', False):
                 hiddens = self.gnn(A_c, child_hiddens,
                                    batch_tree.getChildCount())
             else:

@@ -249,19 +249,38 @@ def _copy_into_layer(gnn):
 def test_tau1_cell_is_one_encoder_layer():
     """The cell-for-cell law for the transformer (as GAU is to the GRU):
     one tau1 cell application = one pre-LN encoder layer over
-    [CLS; children] + CLS readout. Verified module-level by weight copy."""
-    from aan.models.encoder_cell.TAU import CLSChildAttention
+    [self; children]; the node's own embedded input is the query row.
+    Verified module-level by weight copy."""
+    from aan.models.encoder_cell.TAU import ParentChildAttention
     torch.manual_seed(7)
-    gnn = CLSChildAttention(HIDDEN, heads=HEADS, ff_mult=FF_MULT)
+    inject = nn.Linear(8, HIDDEN)
+    gnn = ParentChildAttention(HIDDEN, inject, heads=HEADS, ff_mult=FF_MULT)
     layer = _copy_into_layer(gnn)
     B, C = 3, 5
     children = torch.randn(B, C, HIDDEN)
+    x = torch.randn(B, 1, 8)
     full = torch.ones(C, C)
-    out = gnn([full] * B, children, [C] * B)     # (B, C+1, H), CLS first
-    ref_tokens = torch.cat([gnn.cls.expand(B, -1, -1), children], dim=1)
+    out = gnn([full] * B, children, [C] * B, x)  # (B, C+1, H), self first
+    ref_tokens = torch.cat([inject(x), children], dim=1)
     ref = layer(ref_tokens)
     assert torch.allclose(out, ref, atol=1e-6), \
         'max diff {}'.format((out - ref).abs().max().item())
+
+
+def test_tau1_leaf_is_the_same_layer_on_one_token():
+    """Leaves obey the same rule: one encoder layer over the single self
+    token (no zero-child special case, no synthetic CLS)."""
+    from aan.models.encoder_cell.TAU import ParentChildAttention
+    torch.manual_seed(9)
+    inject = nn.Linear(8, HIDDEN)
+    gnn = ParentChildAttention(HIDDEN, inject, heads=HEADS, ff_mult=FF_MULT)
+    layer = _copy_into_layer(gnn)
+    B = 3
+    x = torch.randn(B, 1, 8)
+    empty = torch.zeros(B, 0, HIDDEN)
+    out = gnn([None] * B, empty, [0] * B, x)
+    ref = layer(inject(x))
+    assert torch.allclose(out, ref, atol=1e-6)
 
 
 def test_tau1_star_tree_parent_is_cls_of_encoder_layer():
@@ -287,6 +306,7 @@ def test_tau1_star_tree_parent_is_cls_of_encoder_layer():
 
     def grab_gnn(_m, inputs, out):
         captured['tokens'] = inputs[1].detach()
+        captured['x'] = inputs[3].detach()
         captured['gnn_out'] = out.detach()
 
     def grab_readout(_m, _inp, out):
@@ -303,7 +323,10 @@ def test_tau1_star_tree_parent_is_cls_of_encoder_layer():
 
     leaf_states = captured['tokens'][:, :C, :]
     layer = _copy_into_layer(gnn)
-    ref_tokens = torch.cat([gnn.cls.expand(1, -1, -1), leaf_states], dim=1)
+    parent_tok = gnn.inject(captured['x'])
+    if parent_tok.dim() == 2:
+        parent_tok = parent_tok.unsqueeze(1)
+    ref_tokens = torch.cat([parent_tok, leaf_states], dim=1)
     ref = layer(ref_tokens)
 
     assert torch.allclose(captured['gnn_out'][:, :C + 1, :], ref, atol=1e-5)

@@ -54,7 +54,7 @@ class TransformerAssociationUnit(nn.Module):
 
     def __init__(self, input_dim, hidden_dim, ff_mult=2, variant='post'):
         super().__init__()
-        if variant not in ('post', 'pre', 'gated', 'inject'):
+        if variant not in ('post', 'pre', 'gated', 'inject', 'identity'):
             raise ValueError('unknown TAU variant: %r' % (variant,))
         self.input_dim = input_dim
         self.hidden_dim = hidden_dim
@@ -73,6 +73,10 @@ class TransformerAssociationUnit(nn.Module):
             nn.init.constant_(self.gate.bias, -2.0)
 
     def forward(self, x, h):
+        if self.variant == 'identity':
+            # tau1: the node's whole update (self token + children, one
+            # encoder layer) happened in the aggregation; h IS the state.
+            return h
         u = h + self.inject(x)
         if self.variant == 'inject':
             # tau1: the whole encoder layer lives in the CLS aggregation;
@@ -89,37 +93,42 @@ class TransformerAssociationUnit(nn.Module):
         return (1 - z) * h + z * out
 
 
-class CLSChildAttention(nn.Module):
+class ParentChildAttention(nn.Module):
     """tau1 aggregation: ONE pre-LN transformer encoder layer over
-    [CLS; children], CLS row = the parent's aggregated state.
+    [self; children] --- the parent's own embedded input is the query row
+    and its output row IS the node's new state. Tree-native: no synthetic
+    CLS token; the tree already provides the aggregator, the node itself.
+    Leaves follow the same rule with zero children (one layer over the
+    single self token), so every node applies exactly one encoder layer.
 
     Restores the family's cell-for-cell design law (GAU cell = one GRU
-    step, RAN = one RNN step, graph slot = one GCN/GAT round): one tau1
-    cell application = one transformer encoder layer + CLS readout, with
-    the node input injected into the residual stream by the combine.
+    step, RAN = one RNN step, graph slot = one GCN/GAT round) for the
+    transformer, and stays inside the DFC contract: the cell reads only
+    the node's own input and its children's finished hidden states.
 
-    Mask semantics: CLS attends every real child and itself, and every
-    real child attends CLS (so the parent can collect even when A=None);
-    child<->child attention follows A~ = A + I exactly as in
+    Mask semantics: the self row attends every real child and itself, and
+    every real child attends the self row (the parent collects even when
+    A=None); child<->child attention follows A~ = A + I exactly as in
     TransformerChildAttention; padded rows keep a self-loop only.
     """
 
     needs_counts = True
+    needs_x = True
 
-    def __init__(self, hidden_dim, heads=4, ff_mult=2, sibling_pe=False):
+    def __init__(self, hidden_dim, inject, heads=4, ff_mult=2,
+                 sibling_pe=False):
         super().__init__()
         self.hidden_dim = hidden_dim
         self.heads = heads
         self.sibling_pe = sibling_pe
-        self.cls = nn.Parameter(torch.zeros(1, 1, hidden_dim))
-        nn.init.normal_(self.cls, std=0.02)
+        self.inject = inject           # shared with the combine (embedding)
         self.ln_attn = nn.LayerNorm(hidden_dim)
         self.attn = nn.MultiheadAttention(hidden_dim, heads, batch_first=True)
         self.ln_ff = nn.LayerNorm(hidden_dim)
         self.ff = _feed_forward(hidden_dim, ff_mult)
 
     def blocked_mask(self, adj_list, counts, n_children, device):
-        """(B, C+1, C+1) bool mask over [CLS; children], True = blocked."""
+        """(B, C+1, C+1) bool mask over [self; children], True = blocked."""
         B = len(adj_list)
         allowed = torch.zeros(B, n_children + 1, n_children + 1,
                               dtype=torch.bool, device=device)
@@ -128,8 +137,8 @@ class CLSChildAttention(nn.Module):
         for i, a in enumerate(adj_list):
             k = int(counts[i]) if counts is not None else n_children
             if k > 0:
-                allowed[i, 0, 1:k + 1] = True   # CLS -> real children
-                allowed[i, 1:k + 1, 0] = True   # real children -> CLS
+                allowed[i, 0, 1:k + 1] = True   # self -> real children
+                allowed[i, 1:k + 1, 0] = True   # real children -> self
             if a is None:
                 continue                        # siblings do not mix
             if isinstance(a, np.ndarray):
@@ -139,11 +148,14 @@ class CLSChildAttention(nn.Module):
             allowed[i, 1:ka + 1, 1:ka + 1] |= a.reshape(ka, ka) != 0
         return ~allowed
 
-    def forward(self, adj, Wh, child_counts=None):
+    def forward(self, adj, Wh, child_counts=None, x=None):
         B, C, H = Wh.shape
-        if self.sibling_pe:
+        if self.sibling_pe and C > 0:
             Wh = Wh + sinusoidal_pe(C, H, device=Wh.device, dtype=Wh.dtype)
-        tokens = torch.cat([self.cls.expand(B, -1, -1), Wh], dim=1)
+        parent = self.inject(x) if x is not None else Wh.new_zeros(B, 1, H)
+        if parent.dim() == 2:
+            parent = parent.unsqueeze(1)
+        tokens = torch.cat([parent, Wh], dim=1)
         blocked = self.blocked_mask(adj, child_counts, C, Wh.device)
         mask = blocked.repeat_interleave(self.heads, dim=0)
         q = self.ln_attn(tokens)

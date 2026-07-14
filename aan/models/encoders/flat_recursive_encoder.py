@@ -146,7 +146,13 @@ class FlatRecursiveAssociationNeuralNetworks(nn.Module):
             node_features = self.feature_extraction_networks(level['batch_tree'])
 
             if level['max_children'] == 0:  # a level of pure leaves
-                hiddens = self.zero_hiddens.repeat(n, 1, 1)
+                if getattr(self.gnn, 'needs_x', False):
+                    empty = self.zero_hiddens.repeat(n, 1, 1)[:, :0, :]
+                    hiddens = self.gnn([None] * n, empty, [0] * n,
+                                       node_features)
+                    hiddens, _ = self.readout(hiddens, [0] * n)
+                else:
+                    hiddens = self.zero_hiddens.repeat(n, 1, 1)
             else:
                 if level['prev_contiguous']:
                     # chain pattern: children ARE the previous level, in order
@@ -157,7 +163,10 @@ class FlatRecursiveAssociationNeuralNetworks(nn.Module):
                     idx = torch.tensor(level['padded_index'], dtype=torch.long, device=device)
                     child_hiddens = buffer[idx]  # (n, maxC, H)
 
-                if getattr(self.gnn, 'needs_counts', False):
+                if getattr(self.gnn, 'needs_x', False):
+                    hiddens = self.gnn(level['A_c'], child_hiddens,
+                                       level['child_counts'], node_features)
+                elif getattr(self.gnn, 'needs_counts', False):
                     hiddens = self.gnn(level['A_c'], child_hiddens,
                                        level['child_counts'])
                 else:
