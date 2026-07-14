@@ -147,6 +147,30 @@ class TransformerTrunk(nn.Module):
         return out[:, 0]                              # CLS row
 
 
+class GatedTrunk(nn.Module):
+    """The AAN's own gated cell with the tree removed (the gate-vs-tree
+    deconfound). The identical ``GatedRecurrentUnit`` block the GAU/GAAU
+    cell uses (weight-tied) is applied ``steps`` times to the flat
+    feature+one-hot input from a zero state --- a depth-``steps`` chain
+    whose only input is the sample itself. Same gate, same parameter count
+    up to the sibling-attention term, no tree/sibling/multi-parent
+    machinery."""
+
+    def __init__(self, input_dim, hidden_dim, steps=2):
+        super().__init__()
+        from aan.models.encoder_cell.GRU import GatedRecurrentUnit
+        self.cell = GatedRecurrentUnit(input_dim, hidden_dim)
+        self.steps = steps
+        self.hidden_dim = hidden_dim
+
+    def forward(self, x):
+        h = x.new_zeros(x.shape[0], 1, self.hidden_dim)
+        xs = x.unsqueeze(1)
+        for _ in range(self.steps):
+            h = self.cell(xs, h)
+        return h.squeeze(1)
+
+
 # ---------------------------------------------------------------------------
 # Parameter-count auditing against the real AAN association cell
 # ---------------------------------------------------------------------------
@@ -253,8 +277,12 @@ class UnifiedBaseline(nn.Module):
             self.trunk_dim_feedforward = ff
             self.trunk = TransformerTrunk(self.input_dim_with_bias, hidden_dim,
                                           ff, nhead=nhead)
+        elif trunk == 'gru':
+            self.trunk_depth = trunk_depth or 2
+            self.trunk = GatedTrunk(self.input_dim_with_bias, hidden_dim,
+                                    steps=self.trunk_depth)
         else:
-            raise ValueError("unknown trunk: {} (expected 'mlp' or 'transformer')".format(trunk))
+            raise ValueError("unknown trunk: {} (expected 'mlp', 'transformer' or 'gru')".format(trunk))
 
         self.head = nn.Linear(hidden_dim, class_count)
 
@@ -266,6 +294,9 @@ class UnifiedBaseline(nn.Module):
         if self.trunk_kind == 'mlp':
             desc = 'MLP depth={} act={}'.format(self.trunk_depth,
                                                 type(self.trunk.net[-1]).__name__)
+        elif self.trunk_kind == 'gru':
+            desc = 'GatedTrunk (AAN GRU cell, tree removed) steps={}'.format(
+                self.trunk_depth)
         else:
             desc = 'Transformer 1-layer dim_feedforward={}'.format(
                 self.trunk_dim_feedforward)
@@ -376,8 +407,10 @@ def main():
                         help='domain or comma list, with run.py @frac subsample '
                              '(e.g. imdb, imdb@0.1, imdb@0.01, '
                              'mnist,speechcommands,imdb@0.01)')
-    parser.add_argument('--trunk', default='mlp', choices=['mlp', 'transformer'],
-                        help='shared trunk replacing the AAN cell (MLP is primary)')
+    parser.add_argument('--trunk', default='mlp',
+                        choices=['mlp', 'transformer', 'gru'],
+                        help='shared trunk replacing the AAN cell (MLP is '
+                             'primary; gru = the AAN gate without the tree)')
     parser.add_argument('--trunk-depth', type=int, default=None,
                         help='MLP depth override (default: auto-match AAN cell params)')
     parser.add_argument('--dim-feedforward', type=int, default=None,
