@@ -110,6 +110,13 @@ class ParentChildAttention(nn.Module):
     every real child attends the self row (the parent collects even when
     A=None); child<->child attention follows A~ = A + I exactly as in
     TransformerChildAttention; padded rows keep a self-loop only.
+
+    SCOPE: because a single layer's outputs are functions of its INPUT
+    rows, the A_c-controlled child<->child attention shapes only the
+    discarded child rows -- sibling RELATIONS do not reach the surviving
+    parent state within one cell (the parent reads the children as a
+    set). Trees whose A_c carries real edges (CFG, propagation graphs)
+    should use tau/gtau, whose sibling mixing feeds the readout.
     """
 
     needs_counts = True
