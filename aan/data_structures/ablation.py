@@ -100,6 +100,39 @@ def insert_level_padding(root):
     return walk(root)
 
 
+def pad_non_jump_edges(root):
+    """Depth control for the level-jump ablation: insert one pass-through
+    node on every NON-jumping edge, leaving every level-jumping edge intact.
+
+    Trees get deeper and larger (comparably to what ``insert_level_padding``
+    does), but the property under test --- a finished hidden state delivered
+    DIRECTLY to a distant ancestor over a single edge --- is fully preserved.
+    If the level-jump accuracy drop were a depth/size artifact, this control
+    would reproduce it; if the drop comes from losing direct delivery, this
+    control should track the unablated trees. Returns a NEW tree.
+    """
+    memo = {}
+    rebuilt = {}
+
+    def walk(node):
+        nid = id(node)
+        if nid in rebuilt:
+            return rebuilt[nid]
+        clone = NeuroNode(node.x, node.t_d, **_fields(node))
+        _copy_meta(clone, node)
+        rebuilt[nid] = clone
+        h_parent = _height(node, memo)
+        for child in node.C:
+            new_child = walk(child)
+            gap = h_parent - _height(child, memo)
+            if gap <= 1:  # non-jumping edge: add one pass-through node
+                new_child = NeuroNode(None, None, C=[new_child])
+            clone.insert(new_child)
+        return clone
+
+    return walk(root)
+
+
 def cut_extra_parents(root):
     """Keep every shared node under only its FIRST-visited parent; drop the
     redundant parent edges instead of materializing them.
@@ -147,6 +180,7 @@ ABLATIONS = {
     'none': lambda t: t,
     'single-parent': to_single_parent,
     'no-level-jump': insert_level_padding,
+    'depth-pad': pad_non_jump_edges,
     'edge-cut': cut_extra_parents,
     'both': lambda t: insert_level_padding(to_single_parent(t)),
 }
