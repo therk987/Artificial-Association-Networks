@@ -602,6 +602,11 @@ def run_one_seed(args, seed, device):
         version=args.version, engine=args.engine,
     ).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
+    scheduler = None
+    if getattr(args, 'scheduler', 'none') == 'cosine':
+        # the original single-seed protocol (legacy models/torch/learning/config.py)
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            optimizer, T_max=2, eta_min=1e-05)
 
     best = {'valid_acc': 0.0, 'test_acc': 0.0, 'epoch': -1, 'per_domain': {}}
     for epoch in range(args.epochs):
@@ -634,6 +639,8 @@ def run_one_seed(args, seed, device):
             test_acc, per_domain = evaluate(model, test_loader, device)
             best.update(valid_acc=valid_acc, test_acc=test_acc,
                         epoch=epoch, per_domain=per_domain)
+        if scheduler is not None:
+            scheduler.step()
         eval_s = time.perf_counter() - t_eval
         split = ' '.join('%s %.0f' % (k, v) for k, v in
                          sorted(domain_s.items(), key=lambda kv: -kv[1]))
@@ -669,6 +676,11 @@ def main():
     parser.add_argument('--epochs', type=int, default=10)
     parser.add_argument('--batch-size', type=int, default=100)
     parser.add_argument('--lr', type=float, default=1e-3)
+    parser.add_argument('--scheduler', default='none', choices=['none', 'cosine'],
+                        help="'cosine' restores the original single-seed "
+                             "protocol's CosineAnnealingLR(T_max=2, eta_min=1e-5); "
+                             "the multi-seed revision protocol is 'none' "
+                             "(constant lr)")
     parser.add_argument('--input-dim', type=int, default=128)
     parser.add_argument('--hidden-dim', type=int, default=128)
     parser.add_argument('--limit', type=int, default=None,
